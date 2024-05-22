@@ -6,15 +6,29 @@ import numpy
 
 
 class QuantisedWrapper(nn.Module):
-    def __init__(self, network, fnumber, bnumber, round_mode):
+    def __init__(self, network, fnumber, bnumber, fround_mode, bround_mode):
         super(QuantisedWrapper, self).__init__()
         self.network = network
-        self.quant = Quantizer(forward_number=fnumber, forward_rounding=round_mode)
-        self.quant_b = Quantizer(backward_number=bnumber, backward_rounding=round_mode)
+        self.fnumber = fnumber
+        self.bnubmer = bnumber
+        self.fround_mode = fround_mode
+        self.bround_mode = bround_mode
+        self.quant = Quantizer(forward_number=fnumber, forward_rounding=fround_mode)
+        self.quant_b = Quantizer(backward_number=bnumber, backward_rounding=bround_mode)
+
+    def set_number_format(self, *, fnumber, bnumber, fround_mode, bround_mode):
+        self.fnumber = fnumber
+        self.bnubmer = bnumber
+        self.fround_mode = fround_mode
+        self.bround_mode = bround_mode
+        self.quant = Quantizer(forward_number=fnumber, forward_rounding=fround_mode)
+        self.quant_b = Quantizer(backward_number=bnumber, backward_rounding=bround_mode)
 
     def forward(self, x):
-        if IS_FULL_PRECISION:
-            return self.network(x)
+        if isinstance(self.fnumber, qtorch.FloatingPoint) and isinstance(self.bnumber, qtorch.FloatingPoint):
+            if self.fnumber.exp == 8 and self.bnumber.exp == 8:
+                if self.fnumber.man == 23 and self.bnumber.man == 23:
+                    return self.network(x)
         assert torch.all(x.isnan() == False)
         before = self.quant(x)
         assert torch.all(before.isnan() == False)
@@ -22,6 +36,18 @@ class QuantisedWrapper(nn.Module):
         assert torch.all(a.isnan() == False)
         after = self.quant_b(a)
         return after
+
+def apply_number_format(network, fnumber, bnumber, fround_mode, bround_mode):
+    for name, module in network.named_children():
+        if isinstance(module, qtorch.quant.QuantisedWrapper):
+            module.set_number_format(
+                fnumber=fnumber,
+                bnumber=bnumber,
+                fround_mode=fround_mode,
+                bround_mode=bround_mode
+            )
+        else:
+            apply_number_format(module, fnumber, bnumber, fround_mode, bround_mode)
 
 def replace_linear_with_quantized(network, fnumber, bnumber, round_mode):
     # Create a temporary list to store the modules to replace
