@@ -49,8 +49,12 @@ def apply_number_format(network, fnumber, bnumber, fround_mode, bround_mode):
         else:
             apply_number_format(module, fnumber, bnumber, fround_mode, bround_mode)
 
-def replace_linear_with_quantized(network, fnumber, bnumber, round_mode):
+def replace_linear_with_quantized(network, fnumber=None, bnumber=None, round_mode=
+                                  "stochastic"):
     # Create a temporary list to store the modules to replace
+    fnumber = fnumber or qtorch.FloatingPoint(8, 23)
+    bnumber = bnumber or qtorch.FloatingPoint(8, 23)
+
     to_replace = []
     
     # Iterate to collect modules that need to be replaced
@@ -74,7 +78,7 @@ class MasterWeightOptimizerWrapper():
             optimizer,
             scheduler,
             weight_quant,
-            grad_acc_steps=1,
+            criterion,
             grad_clip=float("inf"),
             grad_scaling=1.0,
     ):
@@ -85,8 +89,7 @@ class MasterWeightOptimizerWrapper():
         self.grad_clip = grad_clip
         self.scheduler = scheduler
         self.weight_quant = weight_quant
-        self.grad_acc_steps = grad_acc_steps
-        self.loss_fn = nn.BCELoss()
+        self.criterion = criterion
 
     # --- for mix precision training ---
     def model_grads_to_master_grads(self):
@@ -115,7 +118,7 @@ class MasterWeightOptimizerWrapper():
         self.master_weight.zero_grad()
         self.model_weight.zero_grad()
         output = self.model_weight(data)
-        loss = self.loss_fn(output, target)
+        loss = self.criterion(output, target)
         # loss = loss * self.grad_scaling
         loss.backward()
         pred = output.round()
