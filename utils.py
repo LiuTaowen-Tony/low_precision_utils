@@ -3,6 +3,7 @@ from qtorch.quant import Quantizer
 import qtorch.quant
 import torch
 import numpy
+from torch import nn
 
 
 class QuantisedWrapper(nn.Module):
@@ -10,7 +11,7 @@ class QuantisedWrapper(nn.Module):
         super(QuantisedWrapper, self).__init__()
         self.network = network
         self.fnumber = fnumber
-        self.bnubmer = bnumber
+        self.bnumber = bnumber
         self.fround_mode = fround_mode
         self.bround_mode = bround_mode
         self.quant = Quantizer(forward_number=fnumber, forward_rounding=fround_mode)
@@ -18,7 +19,7 @@ class QuantisedWrapper(nn.Module):
 
     def set_number_format(self, *, fnumber, bnumber, fround_mode, bround_mode):
         self.fnumber = fnumber
-        self.bnubmer = bnumber
+        self.bnumber = bnumber
         self.fround_mode = fround_mode
         self.bround_mode = bround_mode
         self.quant = Quantizer(forward_number=fnumber, forward_rounding=fround_mode)
@@ -39,7 +40,7 @@ class QuantisedWrapper(nn.Module):
 
 def apply_number_format(network, fnumber, bnumber, fround_mode, bround_mode):
     for name, module in network.named_children():
-        if isinstance(module, qtorch.quant.QuantisedWrapper):
+        if isinstance(module, QuantisedWrapper):
             module.set_number_format(
                 fnumber=fnumber,
                 bnumber=bnumber,
@@ -48,6 +49,7 @@ def apply_number_format(network, fnumber, bnumber, fround_mode, bround_mode):
             )
         else:
             apply_number_format(module, fnumber, bnumber, fround_mode, bround_mode)
+    return network
 
 def replace_linear_with_quantized(network, fnumber, bnumber, round_mode):
     # Create a temporary list to store the modules to replace
@@ -56,7 +58,7 @@ def replace_linear_with_quantized(network, fnumber, bnumber, round_mode):
     # Iterate to collect modules that need to be replaced
     for name, module in network.named_children():
         if isinstance(module, (nn.Linear, nn.Conv2d)):
-            layer = QuantisedWrapper(module, fnumber, bnumber, round_mode)
+            layer = QuantisedWrapper(module, fnumber, bnumber, round_mode, round_mode)
             to_replace.append((name, layer))
         else:
             replace_linear_with_quantized(module, fnumber, bnumber, round_mode)
@@ -112,20 +114,19 @@ class MasterWeightOptimizerWrapper():
 
 
     def train_on_batch(self, data, target):
+        self.master_params_to_model_params()
         self.master_weight.zero_grad()
         self.model_weight.zero_grad()
-        output = self.model_weight(data)
-        loss = self.loss_fn(output, target)
+        loss_acc = self.model_weight.loss_acc()
+        loss = loss_acc["loss"]
+        acc = loss_acc["acc"]
         # loss = loss * self.grad_scaling
         loss.backward()
-        pred = output.round()
-        acc = (pred == target).float().mean()
         self.model_grads_to_master_grads()
         # self.master_grad_apply(lambda x: x / self.grad_scaling)
         # grad_norm = nn.utils.clip_grad_norm_(self.master_weight.parameters(), self.grad_clip)
         self.optimizer.step()
         self.scheduler.step()
-        self.master_params_to_model_params()
         return {"loss": loss.item(),  "acc": acc.item()}
 
     def train_with_grad_acc(self, data, target):
@@ -151,3 +152,17 @@ class MasterWeightOptimizerWrapper():
         self.scheduler.step()
         return {"loss": numpy.mean(losses),  "acc": numpy.mean(acces), "grad_norm": grad_norm.item()}
 
+def grad_on_dataset(network, data, target):
+    network.train()
+    total_norm = 0
+    network.zero_grad()
+    idx = torch.randperm(len(data))
+    data = data[idx]
+    target = target[idx]
+    loss_acc = network.loss_acc()
+    loss = loss_acc["loss"]
+    acc = loss_acc["acc"]
+    loss.backward()
+    total_norm = nn.utils.clip_grad_norm_(network.parameters(), float('inf'))
+    network.zero_grad()
+    return {"grad_norm_entire": total_norm.item()}
