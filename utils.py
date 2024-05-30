@@ -89,10 +89,10 @@ class MasterWeightOptimizerWrapper():
             model_weight,
             optimizer,
             scheduler,
-            weight_quant,
-            criterion,
+            weight_quant=None,
             grad_clip=float("inf"),
             grad_scaling=1.0,
+            grad_stats=False
     ):
         self.master_weight = master_weight
         self.model_weight = model_weight
@@ -100,7 +100,10 @@ class MasterWeightOptimizerWrapper():
         self.grad_scaling = grad_scaling
         self.grad_clip = grad_clip
         self.scheduler = scheduler
+        if weight_quant is None:
+            weight_quant = lambda x: x
         self.weight_quant = weight_quant
+        self.grad_stats = grad_stats
 
     # --- for mix precision training ---
     def model_grads_to_master_grads(self):
@@ -123,7 +126,6 @@ class MasterWeightOptimizerWrapper():
                 model.data.copy_(self.weight_quant(master.data))
             else:
                 model.data.copy_(master.data)
-
 
     def train_on_batch(self, data, target):
         self.master_params_to_model_params()
