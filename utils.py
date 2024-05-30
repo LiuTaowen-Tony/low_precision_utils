@@ -25,11 +25,19 @@ class QuantisedWrapper(nn.Module):
         self.quant = Quantizer(forward_number=fnumber, forward_rounding=fround_mode)
         self.quant_b = Quantizer(backward_number=bnumber, backward_rounding=bround_mode)
 
+    def is_full_precision(self):
+        if not (isinstance(self.fnumber, qtorch.FloatingPoint) and isinstance(self.bnumber, qtorch.FloatingPoint)):
+            return False
+        if self.fnumber.exp != 8 or self.bnumber.exp != 8:
+            return False
+        if self.fnumber.man != 23 or self.bnumber.man != 23:
+            return False
+        return True
+
+
     def forward(self, x):
-        if isinstance(self.fnumber, qtorch.FloatingPoint) and isinstance(self.bnumber, qtorch.FloatingPoint):
-            if self.fnumber.exp == 8 and self.bnumber.exp == 8:
-                if self.fnumber.man == 23 and self.bnumber.man == 23:
-                    return self.network(x)
+        if self.is_full_precision():
+            return self.network(x)
         assert torch.all(x.isnan() == False)
         before = self.quant(x)
         assert torch.all(before.isnan() == False)
@@ -88,7 +96,6 @@ class MasterWeightOptimizerWrapper():
         self.scheduler = scheduler
         self.weight_quant = weight_quant
         self.grad_acc_steps = grad_acc_steps
-        self.loss_fn = nn.BCELoss()
 
     # --- for mix precision training ---
     def model_grads_to_master_grads(self):
@@ -117,7 +124,7 @@ class MasterWeightOptimizerWrapper():
         self.master_params_to_model_params()
         self.master_weight.zero_grad()
         self.model_weight.zero_grad()
-        loss_acc = self.model_weight.loss_acc()
+        loss_acc = self.model_weight.loss_acc(data, target)
         loss = loss_acc["loss"]
         acc = loss_acc["acc"]
         # loss = loss * self.grad_scaling
@@ -127,7 +134,9 @@ class MasterWeightOptimizerWrapper():
         # grad_norm = nn.utils.clip_grad_norm_(self.master_weight.parameters(), self.grad_clip)
         self.optimizer.step()
         self.scheduler.step()
-        return {"loss": loss.item(),  "acc": acc.item()}
+        if isinstance(acc, torch.Tensor):
+            acc = acc.item()
+        return {"loss": loss.item(),  "acc": acc}
 
     def train_with_grad_acc(self, data, target):
         self.master_weight.zero_grad()
@@ -151,18 +160,3 @@ class MasterWeightOptimizerWrapper():
         self.optimizer.step()
         self.scheduler.step()
         return {"loss": numpy.mean(losses),  "acc": numpy.mean(acces), "grad_norm": grad_norm.item()}
-
-def grad_on_dataset(network, data, target):
-    network.train()
-    total_norm = 0
-    network.zero_grad()
-    idx = torch.randperm(len(data))
-    data = data[idx]
-    target = target[idx]
-    loss_acc = network.loss_acc()
-    loss = loss_acc["loss"]
-    acc = loss_acc["acc"]
-    loss.backward()
-    total_norm = nn.utils.clip_grad_norm_(network.parameters(), float('inf'))
-    network.zero_grad()
-    return {"grad_norm_entire": total_norm.item()}
