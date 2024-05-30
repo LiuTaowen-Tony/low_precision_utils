@@ -1,7 +1,9 @@
+import torch
+from torch import nn
 import qtorch
 from qtorch.quant import Quantizer
 import qtorch.quant
-import torch
+import copy
 import numpy
 from torch import nn
 
@@ -59,8 +61,12 @@ def apply_number_format(network, fnumber, bnumber, fround_mode, bround_mode):
             apply_number_format(module, fnumber, bnumber, fround_mode, bround_mode)
     return network
 
-def replace_linear_with_quantized(network, fnumber, bnumber, round_mode):
+def replace_linear_with_quantized(network, fnumber=None, bnumber=None, round_mode=
+                                  "stochastic"):
     # Create a temporary list to store the modules to replace
+    fnumber = fnumber or qtorch.FloatingPoint(8, 23)
+    bnumber = bnumber or qtorch.FloatingPoint(8, 23)
+
     to_replace = []
     
     # Iterate to collect modules that need to be replaced
@@ -84,7 +90,7 @@ class MasterWeightOptimizerWrapper():
             optimizer,
             scheduler,
             weight_quant,
-            grad_acc_steps=1,
+            criterion,
             grad_clip=float("inf"),
             grad_scaling=1.0,
     ):
@@ -95,7 +101,6 @@ class MasterWeightOptimizerWrapper():
         self.grad_clip = grad_clip
         self.scheduler = scheduler
         self.weight_quant = weight_quant
-        self.grad_acc_steps = grad_acc_steps
 
     # --- for mix precision training ---
     def model_grads_to_master_grads(self):
@@ -160,3 +165,28 @@ class MasterWeightOptimizerWrapper():
         self.optimizer.step()
         self.scheduler.step()
         return {"loss": numpy.mean(losses),  "acc": numpy.mean(acces), "grad_norm": grad_norm.item()}
+
+
+class ModelEma(nn.Module):
+    def __init__(self, model, decay=0.9999, device=None):
+        super(ModelEma, self).__init__()
+        # make a copy of the model for accumulating moving average of weights
+        self.module = copy.deepcopy(model)
+        self.module.eval()
+        self.decay = decay
+        self.device = device  # perform ema on different device from model if set
+        if self.device is not None:
+            self.module.to(device=device)
+
+    def _update(self, model, update_fn):
+        with torch.no_grad():
+            for ema_v, model_v in zip(self.module.state_dict().values(), model.state_dict().values()):
+                if self.device is not None:
+                    model_v = model_v.to(device=self.device)
+                ema_v.copy_(update_fn(ema_v, model_v))
+
+    def update(self, model):
+        self._update(model, update_fn=lambda e, m: self.decay * e + (1. - self.decay) * m)
+
+    def set(self, model):
+        self._update(model, update_fn=lambda e, m: m)
