@@ -36,7 +36,7 @@ def grad_on_dataset(network, data, target):
     loss.backward()
     total_norm = nn.utils.clip_grad_norm_(network.parameters(), float('inf'))
     network.zero_grad()
-    return {"grad_norm_entire": total_norm.item()}
+    return {"grad_norm_entire": total_norm.item()} | grad_zero_percentage(network)
 
 
 def grad_zero_percentage(network):
