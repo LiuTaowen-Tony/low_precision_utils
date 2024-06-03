@@ -22,6 +22,39 @@ class EMAMetrics:
         report["ema_beta"] = self.beta
         return report
 
+def diff_of_grad(wrapper, model_weight, master_weight, data, target):
+    # at the same traning step
+    # that is have the same training data and target
+    # we compute the gradient on full precison model
+    # then compute the same thing on low precision model (with different seed)
+    # we check if for each parameter the estimation is biased
+
+    # this time, we check the difference between activation quantise only
+    # and full precision model
+
+    master_weight.zero_grad()
+    reference_loss = master_weight.loss_acc(data, target)["loss"]
+    reference_loss.backward()
+    reference_grad = get_grad(master_weight)
+    master_weight.zero_grad()
+
+    grad_estimation_samples = []
+    for i in range(100):
+        model_weight.zero_grad()
+        sample_loss = model_weight.loss_acc(data, target)["loss"]
+        sample_loss.backward()
+        sample_grad = get_grad(model_weight)
+        grad_estimation_samples.append(sample_grad)
+        model_weight.zero_grad()
+
+    return reference_grad, sample_grad
+    
+
+
+
+
+
+    
 
 def grad_on_dataset(network, data, target):
     network.train()
