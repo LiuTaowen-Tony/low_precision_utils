@@ -7,6 +7,16 @@ import copy
 import numpy
 from torch import nn
 
+TEST_NAN = False
+
+def assert_nan(x):
+    if not TEST_NAN:
+        return x
+    if x.isnan().any():
+        print(x)
+    assert torch.all(x.isnan() == False)
+    assert torch.all(x.isinf() == False)
+    return x
 
 class QuantisedWrapper(nn.Module):
     def __init__(self, network, fnumber, bnumber, fround_mode, bround_mode):
@@ -40,12 +50,13 @@ class QuantisedWrapper(nn.Module):
     def forward(self, x):
         if self.is_full_precision():
             return self.network(x)
-        assert torch.all(x.isnan() == False)
+        assert_nan(x)
         before = self.quant(x)
-        assert torch.all(before.isnan() == False)
+        assert_nan(before)
         a = self.network(before)
-        assert torch.all(a.isnan() == False)
+        assert_nan(a)
         after = self.quant_b(a)
+        assert_nan(after)
         return after
 
 def apply_number_format(network, fnumber, bnumber, fround_mode, bround_mode):
@@ -92,7 +103,8 @@ class MasterWeightOptimizerWrapper():
             weight_quant=None,
             grad_clip=float("inf"),
             grad_scaling=1.0,
-            grad_stats=False
+            grad_stats=False,
+            grad_acc_steps=1
     ):
         self.master_weight = master_weight
         self.model_weight = model_weight
@@ -104,24 +116,26 @@ class MasterWeightOptimizerWrapper():
             weight_quant = lambda x: x
         self.weight_quant = weight_quant
         self.grad_stats = grad_stats
+        self.grad_acc_steps = grad_acc_steps
 
     # --- for mix precision training ---
     def model_grads_to_master_grads(self):
         for model, master in zip(self.model_weight.parameters(), self.master_weight.parameters()):
             if master.grad is None:
-                master.grad = master.data.new(*master.data.size())
-                master.grad.data.copy_(model.grad.data)
-            else:
-                master.grad.data.add_(model.grad.data)
+                master.grad = torch.zeros_like(master.data)
+            assert_nan(model.grad.data)
+            assert_nan(master.grad.data)
+            master.grad.data.copy_(model.grad.data)
 
     def master_grad_apply(self, fn):
         for master in (self.master_weight.parameters()):
             if master.grad is None:
-                master.grad = fn(master.data.new(*master.data.size()))
+                master.grad = torch.zeros_like(master.data)
             master.grad.data = fn(master.grad.data)
 
     def master_params_to_model_params(self, quantize=True):
         for model, master in zip(self.model_weight.parameters(), self.master_weight.parameters()):
+            assert_nan(master.data)
             if quantize:
                 model.data.copy_(self.weight_quant(master.data))
             else:
@@ -129,14 +143,16 @@ class MasterWeightOptimizerWrapper():
 
     def train_on_batch(self, data, target):
         self.master_params_to_model_params()
-        self.master_weight.zero_grad()
         self.model_weight.zero_grad()
+        self.master_weight.zero_grad()
         loss_acc = self.model_weight.loss_acc(data, target)
         loss = loss_acc["loss"]
+        assert_nan(loss)
         acc = loss_acc["acc"]
         # loss = loss * self.grad_scaling
         loss.backward()
         self.model_grads_to_master_grads()
+        self.master_grad_apply(assert_nan)
         # self.master_grad_apply(lambda x: x / self.grad_scaling)
         # grad_norm = nn.utils.clip_grad_norm_(self.master_weight.parameters(), self.grad_clip)
         self.optimizer.step()
@@ -144,6 +160,68 @@ class MasterWeightOptimizerWrapper():
         if isinstance(acc, torch.Tensor):
             acc = acc.item()
         return {"loss": loss.item(),  "acc": acc}
+
+    def compute_true_grad(self, X, y):
+        self.master_weight.zero_grad()
+        self.master_weight.loss_acc(X, y)["loss"].backward()
+        grads = []
+        for p in self.master_weight.parameters():
+            grads.append(p.grad.data.clone().detach())
+        self.master_weight.zero_grad()
+        return grads
+
+    def collect_grads(self, target="model_weight"):
+        if target == "model_weight":
+            return [p.grad.data.clone().detach() for p in self.model_weight.parameters()]
+        elif target == "master_weight":
+            return [p.grad.data.clone().detach() for p in self.master_weight.parameters()]
+
+    def train_compare_true_gradient(self, data, target, X_train, y_train):
+        true_grads = self.compute_true_grad(X_train, y_train)
+        self.master_params_to_model_params()
+        self.model_weight.zero_grad()
+        self.master_weight.zero_grad()
+        loss_acc = self.model_weight.loss_acc(data, target)
+        loss = loss_acc["loss"]
+        assert_nan(loss)
+        acc = loss_acc["acc"]
+        loss.backward()
+        model_grads = self.collect_grads("model_weight")
+        diff = []
+        for g1, g2 in zip(model_grads, true_grads):
+            diff.append(((g1 - g2) ** 2).sum().item())
+        self.model_grads_to_master_grads()
+        self.master_grad_apply(assert_nan)
+        self.optimizer.step()
+        self.scheduler.step()
+        if isinstance(acc, torch.Tensor):
+            acc = acc.item()
+        grad_diff = numpy.sqrt(numpy.mean(diff))
+        return {"loss": loss.item(),  "acc": acc, "grad_diff": grad_diff}
+
+    def train_with_repeat(self, data, target):
+        self.master_weight.zero_grad()
+        self.model_weight.zero_grad()
+        losses = []
+        acces = []
+        self.grad = {}
+        data = data.repeat(self.grad_acc_steps, 1)
+        target = target.repeat(self.grad_acc_steps, 1)
+        self.master_params_to_model_params()
+        loss_acc = self.model_weight.loss_acc(data, target)
+        loss = loss_acc["loss"]
+        loss.backward()
+        losses.append(loss.item())
+        acc = loss_acc["acc"]
+        if isinstance(acc, torch.Tensor):
+            acc = acc.item()
+        acces.append(acc)
+        self.model_grads_to_master_grads()
+        self.master_grad_apply(lambda x: x / self.grad_acc_steps)
+        # grad_norm = nn.utils.clip_grad_norm_(self.master_weight.parameters(), self.grad_clip)
+        self.optimizer.step()
+        self.scheduler.step()
+        return {"loss": numpy.mean(losses),  "acc": numpy.mean(acces)}    
 
     def train_with_grad_acc(self, data, target):
         self.master_weight.zero_grad()
@@ -155,18 +233,20 @@ class MasterWeightOptimizerWrapper():
         self.grad = {}
         for d, t in zip(ds, ts):
             self.master_params_to_model_params()
-            output = self.model_weight(d)
-            loss = self.loss_fn(output, t)
-            loss = loss * self.grad_scaling
+            loss_acc = self.model_weight.loss_acc(d, t)
+            loss = loss_acc["loss"]
             loss.backward()
-            acces.append((output.argmax(dim=1) == t).float().mean().item())
             losses.append(loss.item())
+            acc = loss_acc["acc"]
+            if isinstance(acc, torch.Tensor):
+                acc = acc.item()
+            acces.append(acc)
         self.model_grads_to_master_grads()
         self.master_grad_apply(lambda x: x / self.grad_scaling / self.grad_acc_steps)
-        grad_norm = nn.utils.clip_grad_norm_(self.master_weight.parameters(), self.grad_clip)
+        # grad_norm = nn.utils.clip_grad_norm_(self.master_weight.parameters(), self.grad_clip)
         self.optimizer.step()
         self.scheduler.step()
-        return {"loss": numpy.mean(losses),  "acc": numpy.mean(acces), "grad_norm": grad_norm.item()}
+        return {"loss": numpy.mean(losses),  "acc": numpy.mean(acces)}
 
 
 class ModelEma(nn.Module):

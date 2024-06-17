@@ -5,7 +5,7 @@ from typing import Dict
 import torch
 
 class EMAMetrics:
-    def __init__(self, beta=0.9) -> None:
+    def __init__(self, beta=0.8) -> None:
         self.metrics = {}
         self.beta = beta
 
@@ -52,6 +52,19 @@ def diff_of_grad(wrapper, model_weight, master_weight, data, target):
 
 
 
+def compute_grad_weight_corr(model):
+    result = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            # corrcoef takes 1 input
+            # we need to flatten the tensor
+            # and stack
+            corr_input = torch.stack([param.grad.data.flatten().abs(), param.data.flatten().abs()])
+            corr = torch.corrcoef(corr_input)
+            # corr = torch.corrcoef(param.grad.data.flatten(), param.data.flatten())[0, 1]
+            result[f"{name}_grad_corr"] = corr[0, 1].item()
+    return result
+    
 
 
     
@@ -68,15 +81,17 @@ def grad_on_dataset(network, data, target):
     acc = loss_acc["acc"]
     loss.backward()
     total_norm = nn.utils.clip_grad_norm_(network.parameters(), float('inf'))
+    grad_zero = grad_zero_percentage(network)
+    grad_weight_corr = compute_grad_weight_corr(network)
     network.zero_grad()
-    return {"grad_norm_entire": total_norm.item()} | grad_zero_percentage(network)
+    return {"grad_norm_entire": total_norm.item()} | grad_zero | grad_weight_corr
 
 
 def grad_zero_percentage(network):
     n_params = 0
     for param in network.parameters():
         n_params += param.numel()
-        n_zero = torch.sum(param == 0).item()
+        n_zero = torch.sum(param.grad.data == 0).item()
     return {"zero_percentage": n_zero / n_params}
 
 
