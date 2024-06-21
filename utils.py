@@ -1,3 +1,4 @@
+import torch.autograd
 import torch
 from torch import nn
 import qtorch
@@ -17,56 +18,184 @@ def assert_nan(x):
     assert torch.all(x.isnan() == False)
     assert torch.all(x.isinf() == False)
     return x
+import torch
+from torch.autograd import Function
 
-class QuantisedWrapper(nn.Module):
-    def __init__(self, network, fnumber, bnumber, fround_mode, bround_mode):
-        super(QuantisedWrapper, self).__init__()
-        self.network = network
+class quant_linear(Function):
+    @staticmethod
+    def forward(ctx, input, weight, bias=None, fnumber=None, fround_mode="nearest", bnumber=None, bround_mode="nearest", same_input=False):
+        # Save tensors for backward
+        qinput = qtorch.quant.quant_function.float_quantize(input, fnumber.exp, fnumber.man, fround_mode)
+        if same_input:
+            input = qinput
+
+        tensors_to_save = [input, weight]
+        if bias is not None:
+            tensors_to_save.append(bias)
+        ctx.save_for_backward(*tensors_to_save)
+
+        # Save non-tensor objects as attributes
+        ctx.bnumber = bnumber
+        ctx.bround_mode = bround_mode
+        ctx.fnumber = fnumber
+        ctx.fround_mode = fround_mode
+        ctx.same_input = same_input
+
+        # Perform forward pass
+        output = qinput.mm(weight.t())
+        if bias is not None:
+            output += bias
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, weight, *bias = ctx.saved_tensors
+
+        # Retrieve non-tensor objects from context
+        bnumber = ctx.bnumber
+        bround_mode = ctx.bround_mode
+        fnumber = ctx.fnumber
+        fround_mode = ctx.fround_mode
+
+        # Perform quantization in backward pass
+        if not ctx.same_input:
+            input = qtorch.quant.quant_function.float_quantize(input, fnumber.exp, fnumber.man, fround_mode)
+        grad_output = qtorch.quant.quant_function.float_quantize(grad_output, bnumber.exp, bnumber.man, bround_mode)
+
+        grad_input = grad_output.mm(weight)
+        grad_weight = grad_output.t().mm(input)
+
+        if bias:
+            grad_bias = grad_output.sum(0)
+            return grad_input, grad_weight, grad_bias, None, None, None, None, None
+        else:
+            return grad_input, grad_weight, None, None, None, None, None, None
+
+
+class quant_conv2d(Function):
+
+    @staticmethod
+    def forward(ctx, input, weight, bias=None, fnumber=None, fround_mode="nearest", bnumber=None, bround_mode="nearest"):
+        # Ensure quantization parameters exist
+        if not (hasattr(fnumber, 'exp') and hasattr(fnumber, 'man')):
+            raise AttributeError("fnumber must have 'exp' and 'man' attributes.")
+        if not (hasattr(bnumber, 'exp') and hasattr(bnumber, 'man')):
+            raise AttributeError("bnumber must have 'exp' and 'man' attributes.")
+        
+        # Save tensors for backward
+        tensors_to_save = [input, weight]
+        if bias is not None:
+            tensors_to_save.append(bias)
+        ctx.save_for_backward(*tensors_to_save)
+
+        # Save non-tensor objects as attributes
+        ctx.fnumber = fnumber
+        ctx.fround_mode = fround_mode
+        ctx.bnumber = bnumber
+        ctx.bround_mode = bround_mode
+
+        # Perform forward pass with quantization
+        output = torch.nn.functional.conv2d(input, weight, bias)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, weight, *bias = ctx.saved_tensors
+
+        # Retrieve non-tensor objects from context
+        fnumber = ctx.fnumber
+        fround_mode = ctx.fround_mode
+        bnumber = ctx.bnumber
+        bround_mode = ctx.bround_mode
+
+        # Quantize grad_output
+        grad_output = qtorch.quant.float_quantize(grad_output, bnumber.exp, bnumber.man, bround_mode)
+        
+        # Compute gradients
+        grad_input = torch.nn.grad.conv2d_input(input.shape, weight, grad_output)
+        grad_weight = torch.nn.grad.conv2d_weight(input, weight.shape, grad_output)
+        grad_bias = grad_output.sum((0, 2, 3)) if bias else None
+
+        # Return gradients for all inputs in the order they were received by the forward method
+        return grad_input, grad_weight, grad_bias, None, None, None, None
+
+
+class QuantLinear(nn.Linear):
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None, fnumber=None, bnumber=None, fround_mode="nearest", bround_mode="nearest", same_input=False):
+        super(QuantLinear, self).__init__(in_features, out_features, bias, device, dtype)
         self.fnumber = fnumber
         self.bnumber = bnumber
         self.fround_mode = fround_mode
         self.bround_mode = bround_mode
-        self.quant = Quantizer(forward_number=fnumber, forward_rounding=fround_mode)
-        self.quant_b = Quantizer(backward_number=bnumber, backward_rounding=bround_mode)
+        self.same_input = same_input
 
-    def set_number_format(self, *, fnumber, bnumber, fround_mode, bround_mode):
+    def forward(self, input):
+        if self.fnumber is None and self.bnumber is None:
+            return super(QuantLinear, self).forward(input)
+        if self.fnumber.man == 23 and self.fnumber.exp == 8 and self.bnumber.exp == 8 and self.bnumber.man == 23:
+            return super(QuantLinear, self).forward(input)
+        return quant_linear.apply(input, self.weight, self.bias, self.fnumber, self.fround_mode, self.bnumber, self.bround_mode, self.same_input)
+
+    def set_number_format(self, *, fnumber, bnumber, fround_mode, bround_mode, same_input):
         self.fnumber = fnumber
         self.bnumber = bnumber
         self.fround_mode = fround_mode
         self.bround_mode = bround_mode
-        self.quant = Quantizer(forward_number=fnumber, forward_rounding=fround_mode)
-        self.quant_b = Quantizer(backward_number=bnumber, backward_rounding=bround_mode)
+        self.same_input = same_input
 
-    def is_full_precision(self):
-        if not (isinstance(self.fnumber, qtorch.FloatingPoint) and isinstance(self.bnumber, qtorch.FloatingPoint)):
-            return False
-        if self.fnumber.exp != 8 or self.bnumber.exp != 8:
-            return False
-        if self.fnumber.man != 23 or self.bnumber.man != 23:
-            return False
-        return True
+    @classmethod
+    def from_full_precision(self, module, fnumber=None, bnumber=None, fround_mode="nearest", bround_mode="nearest"):
+        l = QuantLinear(module.in_features, module.out_features, module.bias is not None, module.weight.device, module.weight.dtype,
+                        fnumber=fnumber, bnumber=bnumber, fround_mode=fround_mode, bround_mode=bround_mode)
+        l.weight.data.copy_(module.weight.data)
+        if module.bias is not None:
+            l.bias.data.copy_(module.bias.data)
+        return l
+
+class QuantConv2d(nn.Conv2d):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='replicate', device=None, dtype=None, fnumber=None, bnumber=None, fround_mode="nearest", bround_mode="nearest"):
+        super(QuantConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype)
+        self.fnumber = fnumber
+        self.bnumber = bnumber
+        self.fround_mode = fround_mode
+        self.bround_mode = bround_mode
+
+    def forward(self, input):
+        if self.fnumber is None and self.bnumber is None:
+            return super(QuantConv2d, self).forward(input)
+        if self.fnumber.man == 23 and self.fnumber.exp == 8 and self.bnumber.exp == 8 and self.bnumber.man == 23:
+            return super(QuantConv2d, self).forward(input)
+        return quant_conv2d.apply(input, self.weight, self.bias, self.fnumber, self.fround_mode, self.bnumber, self.bround_mode)
+
+    def set_number_format(self, *, fnumber, bnumber, fround_mode, bround_mode, same_input=False):
+        self.fnumber = fnumber
+        self.bnumber = bnumber
+        self.fround_mode = fround_mode
+        self.bround_mode = bround_mode
+        self.same_input = same_input
+
+    @classmethod
+    def from_full_precision(self, module, fnumber=None, bnumber=None, fround_mode="nearest", bround_mode="nearest"):
+        l = QuantConv2d(module.in_channels, module.out_channels, module.kernel_size, 
+                        module.stride, module.padding, module.dilation, 
+                        module.groups, module.bias is not None, module.padding_mode,
+                        module.weight.device, module.weight.dtype,
+                        fnumber=fnumber, bnumber=bnumber, fround_mode=fround_mode, bround_mode=bround_mode)
+        l.weight.data.copy_(module.weight.data)
+        if module.bias is not None:
+            l.bias.data.copy_(module.bias.data)
+        return l
 
 
-    def forward(self, x):
-        if self.is_full_precision():
-            return self.network(x)
-        assert_nan(x)
-        before = self.quant(x)
-        assert_nan(before)
-        a = self.network(before)
-        assert_nan(a)
-        after = self.quant_b(a)
-        assert_nan(after)
-        return after
-
-def apply_number_format(network, fnumber, bnumber, fround_mode, bround_mode):
+def apply_number_format(network, fnumber, bnumber, fround_mode, bround_mode, same_input=False):
     for name, module in network.named_children():
-        if isinstance(module, QuantisedWrapper):
+        if hasattr(module, "set_number_format"):
             module.set_number_format(
                 fnumber=fnumber,
                 bnumber=bnumber,
                 fround_mode=fround_mode,
-                bround_mode=bround_mode
+                bround_mode=bround_mode,
+                same_input=same_input
             )
         else:
             apply_number_format(module, fnumber, bnumber, fround_mode, bround_mode)
@@ -82,9 +211,12 @@ def replace_linear_with_quantized(network, fnumber=None, bnumber=None, round_mod
     
     # Iterate to collect modules that need to be replaced
     for name, module in network.named_children():
-        if isinstance(module, (nn.Linear, nn.Conv2d)):
-            layer = QuantisedWrapper(module, fnumber, bnumber, round_mode, round_mode)
-            to_replace.append((name, layer))
+        if isinstance(module, nn.Linear):
+            new_module = QuantLinear.from_full_precision(module, fnumber, bnumber, round_mode, round_mode)
+            to_replace.append((name, new_module))
+        elif isinstance(module, nn.Conv2d):
+            new_module = QuantConv2d.from_full_precision(module, fnumber, bnumber, round_mode, round_mode)
+            to_replace.append((name, new_module))
         else:
             replace_linear_with_quantized(module, fnumber, bnumber, round_mode)
     

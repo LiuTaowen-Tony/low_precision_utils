@@ -22,6 +22,43 @@ class EMAMetrics:
         report["ema_beta"] = self.beta
         return report
 
+class Logger:
+    def __init__(self, log_interval=10):
+        self.log_interval = log_interval
+        self.metrics = {}
+        self.n_iter = 0
+
+    def log(self, metrics: Dict[str, float]) -> None:
+        for key, value in metrics.items():
+            if key not in self.metrics:
+                self.metrics[key] = [value]
+            else:
+                self.metrics[key].append(value)
+        self.n_iter += 1
+
+    def report(self) -> Dict[str, float]:
+        report = {}
+        for key, values in self.metrics.items():
+            report[key] = np.mean(values)
+        return report
+
+    def should_log(self) -> bool:
+        return self.n_iter % self.log_interval == 0
+
+    def reset(self) -> None:
+        self.metrics = {}
+        self.n_iter = 0
+    def __getitem__(self, key):
+        return self.metrics[key]
+    def __setitem__(self, key, value):
+        self.metrics[key] = value
+    def __contains__(self, key):
+        return key in self.metrics
+    def __len__(self):
+        return len(self.metrics)
+
+
+
 def diff_of_grad(wrapper, model_weight, master_weight, data, target):
     # at the same traning step
     # that is have the same training data and target
@@ -82,9 +119,9 @@ def grad_on_dataset(network, data, target):
     loss.backward()
     total_norm = nn.utils.clip_grad_norm_(network.parameters(), float('inf'))
     grad_zero = grad_zero_percentage(network)
-    grad_weight_corr = compute_grad_weight_corr(network)
+    # grad_weight_corr = compute_grad_weight_corr(network)
     network.zero_grad()
-    return {"grad_norm_entire": total_norm.item()} | grad_zero | grad_weight_corr
+    return {"grad_norm_entire": total_norm.item()} #| grad_zero #| grad_weight_corr
 
 
 def grad_zero_percentage(network):
