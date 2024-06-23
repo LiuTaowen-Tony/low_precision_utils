@@ -1,13 +1,11 @@
-import torch.autograd
 import torch
 from torch import nn
+import torch.autograd
+import torch.nn.grad
+
 import qtorch
-from qtorch.quant import Quantizer
 import qtorch.quant
 import copy
-import numpy
-from torch import nn
-import torch.nn.grad
 
 TEST_NAN = False
 
@@ -33,7 +31,7 @@ class quant_linear(Function):
             input = qinput
         if quant_scheme.same_weight:
             weight = qweight
-        ctx.save_for_backward((qinput, qweight, bias))
+        ctx.save_for_backward(qinput, qweight, bias)
 
         output = qinput.mm(qweight.t())
         if bias is not None:
@@ -74,7 +72,7 @@ class quant_conv2d(Function):
             input = qinput
         if quant_scheme.same_weight:
             weight = qweight
-        ctx.save_for_backward((qinput, qweight, bias))
+        ctx.save_for_backward(qinput, qweight, bias)
 
         output = torch.nn.functional.conv2d(qinput, qweight, bias, stride, padding, dilation, groups)
         return output
@@ -145,7 +143,33 @@ class QuantScheme:
     def grad_quant(self, x):
         return self.quant(x, self.bnumber, self.bround_mode)
 
+class QuantWrapper(nn.Module):
+    def __init__(self, module, quant_scheme):
+        super(QuantWrapper, self).__init__()
+        module = replace_with_quantized(module, quant_scheme)
+        self.module = module
 
+    def apply_quant_scheme(self, quant_scheme):
+        self.module = apply_quant_scheme(self.module, quant_scheme)
+        return self
+
+    def forward(self, *args, **kw):
+        return self.module(*args, **kw)
+    
+    def fix_quant(self, weight_number):
+        full_precision_number = qtorch.FloatingPoint(8, 23)
+        quant_scheme = QuantScheme(
+            fnumber=full_precision_number,
+            bnumber=full_precision_number,
+            wnumber=weight_number,
+            fround_mode="nearest",
+            bround_mode="nearest",
+            wround_mode="nearest",
+            same_input=True,
+            same_weight=True
+        )
+        self.module = apply_quant_scheme(self.module, quant_scheme)
+        return self
 
 class QuantLinear(nn.Linear, QuantizedModule):
     def __init__(self, in_features, out_features, bias=True, device=None, dtype=None, quant_scheme=None):
@@ -175,7 +199,8 @@ class QuantConv2d(nn.Conv2d, QuantizedModule):
 
     def forward(self, input):
         if self.training:
-            return quant_conv2d.apply(input, self.weight, self.bias, self.quant_scheme)
+            return quant_conv2d.apply(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups,
+                                      self.quant_scheme)
         else:
             return torch.nn.functional.conv2d(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
@@ -193,7 +218,7 @@ class QuantConv2d(nn.Conv2d, QuantizedModule):
 
 def apply_quant_scheme(network, quant_scheme):
     for name, module in network.named_children():
-        if hasattr(module, quant_scheme):
+        if hasattr(module, "quant_scheme"):
             module.quant_scheme = quant_scheme
         else:
             apply_quant_scheme(module, quant_scheme)

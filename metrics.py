@@ -19,7 +19,6 @@ class EMAMetrics:
                 self.metrics[key] = self.beta * self.metrics[key] + (1 - self.beta) * value
 
         report = {f"{key}_ema": value for key, value in self.metrics.items()}
-        report["ema_beta"] = self.beta
         return report
 
 class Logger:
