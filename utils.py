@@ -53,7 +53,7 @@ class quant_linear(Function):
         grad_input = qgrad_output.mm(qweight)
         grad_weight = qgrad_output.t().mm(qinput)
 
-        grad_bias = qgrad_output.sum(0) if bias else None
+        grad_bias = qgrad_output.sum(0) if bias is not None else None
         return grad_input, grad_weight, grad_bias, None
 
 
@@ -98,7 +98,7 @@ class quant_conv2d(Function):
         grad_bias = qgrad_output.sum(dim=(0, 2, 3)) if bias is not None else None
         return grad_input, grad_weight, grad_bias, None, None, None, None, None
 
-class QuantizedModule:
+class QuantizedModule():
     def __init__(self, quant_scheme):
         self.quant_scheme = quant_scheme
 
