@@ -44,9 +44,9 @@ class quant_linear(Function):
         qinput, qweight, bias = ctx.saved_tensors
 
         if not quant_scheme.same_input:
-            qinput = quant_scheme.input_quant(qinput)
+            qinput = quant_scheme.back_input_quant(qinput)
         if not quant_scheme.same_weight:
-            qweight = quant_scheme.weight_quant(qweight)
+            qweight = quant_scheme.back_weight_quant(qweight)
 
         qgrad_output = quant_scheme.grad_quant(grad_output)
 
@@ -83,9 +83,9 @@ class quant_conv2d(Function):
         qinput, qweight, bias = ctx.saved_tensors
 
         if not quant_scheme.same_input:
-            qinput = quant_scheme.input_quant(qinput)
+            qinput = quant_scheme.back_input_quant(qinput)
         if not quant_scheme.same_weight:
-            qweight = quant_scheme.weight_quant(qweight)
+            qweight = quant_scheme.back_weight_quant(qweight)
 
         qgrad_output = quant_scheme.grad_quant(grad_output)
         
@@ -112,13 +112,21 @@ class QuantScheme:
                  bround_mode="stochastic", 
                  wround_mode="stochastic", 
                  same_input=False,
-                 same_weight=False):
+                 same_weight=False,
+                 bfnumber=None,
+                 bwnumber=None,
+                 bfround_mode=None,
+                 bwround_mode=None,):
         self.fnumber = fnumber
         self.bnumber = bnumber
         self.wnumber = wnumber
+        self.bfnumber = bfnumber or fnumber
+        self.bwnumber = bwnumber or wnumber
         self.fround_mode = fround_mode
         self.bround_mode = bround_mode
         self.wround_mode = wround_mode
+        self.bfround_mode = bfround_mode or fround_mode
+        self.bwround_mode = bwround_mode or wround_mode
         self.same_input = same_input
         self.same_weight = same_weight
 
@@ -143,6 +151,12 @@ class QuantScheme:
     def grad_quant(self, x):
         return self.quant(x, self.bnumber, self.bround_mode)
 
+    def back_input_quant(self, x):
+        return self.quant(x, self.bfnumber, self.bfround_mode)
+    
+    def back_weight_quant(self, x):
+        return self.quant(x, self.bwnumber, self.bwround_mode)
+
 class QuantWrapper(nn.Module):
     def __init__(self, module, quant_scheme):
         super(QuantWrapper, self).__init__()
@@ -150,7 +164,9 @@ class QuantWrapper(nn.Module):
         self.module = module
 
     def apply_quant_scheme(self, quant_scheme):
-        self.module = apply_quant_scheme(self.module, quant_scheme)
+        for name, module in self.named_modules():
+            if hasattr(module, "quant_scheme"):
+                module.quant_scheme = quant_scheme
         return self
 
     def forward(self, *args, **kw):
@@ -168,7 +184,7 @@ class QuantWrapper(nn.Module):
             same_input=True,
             same_weight=True
         )
-        self.module = apply_quant_scheme(self.module, quant_scheme)
+        self.apply_quant_scheme(quant_scheme)
         return self
 
 class QuantLinear(nn.Linear, QuantizedModule):
@@ -216,13 +232,13 @@ class QuantConv2d(nn.Conv2d, QuantizedModule):
         return l
 
 
-def apply_quant_scheme(network, quant_scheme):
-    for name, module in network.named_children():
-        if hasattr(module, "quant_scheme"):
-            module.quant_scheme = quant_scheme
-        else:
-            apply_quant_scheme(module, quant_scheme)
-    return network
+# def apply_quant_scheme(network, quant_scheme):
+#     for name, module in network.named_children():
+#         if hasattr(module, "quant_scheme"):
+#             module.quant_scheme = quant_scheme
+#         else:
+#             apply_quant_scheme(module, quant_scheme)
+#     return network
 
 def replace_with_quantized(network, quant_scheme):
     to_replace = []
