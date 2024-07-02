@@ -24,6 +24,9 @@ class quant_linear(Function):
     @staticmethod
     def forward(ctx, input, weight, bias=None, quant_scheme=None):
         ctx.quant_scheme = quant_scheme
+        input_shape = input.shape
+        # input = input.view(input_shape[0], -1)
+        input = input.view(-1, input_shape[-1])
         qinput = quant_scheme.input_quant(input)
         qweight = quant_scheme.weight_quant(weight)
 
@@ -36,11 +39,13 @@ class quant_linear(Function):
         output = qinput.mm(qweight.t())
         if bias is not None:
             output += bias
-        return output
+        return output.view(*input_shape[:-1], -1)
 
     @staticmethod
     def backward(ctx, grad_output):
         quant_scheme = ctx.quant_scheme
+        grad_output_shape = grad_output.shape
+        grad_output = grad_output.view(-1, grad_output_shape[-1])
         qinput, qweight, bias = ctx.saved_tensors
 
         if not quant_scheme.same_input:
@@ -54,7 +59,7 @@ class quant_linear(Function):
         grad_weight = qgrad_output.t().mm(qinput)
 
         grad_bias = qgrad_output.sum(0) if bias is not None else None
-        return grad_input, grad_weight, grad_bias, None
+        return grad_input.view(*grad_output_shape[:-1], -1), grad_weight, grad_bias, None
 
 
 class quant_conv2d(Function):
@@ -157,6 +162,10 @@ class QuantScheme:
     def back_weight_quant(self, x):
         return self.quant(x, self.bwnumber, self.bwround_mode)
 
+    def __str__(self):
+        return self.__dict__.__str__()
+
+
 class QuantWrapper(nn.Module):
     def __init__(self, module, quant_scheme):
         super(QuantWrapper, self).__init__()
@@ -186,6 +195,22 @@ class QuantWrapper(nn.Module):
         )
         self.apply_quant_scheme(quant_scheme)
         return self
+    
+    def __getattr__(self, name):
+        try:
+            return object.__getattribute__(self.module, name)
+        except AttributeError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    def __setattr__(self, name, value):
+        if name == "module":
+            self.__dict__["module"] = value
+        else:
+            setattr(self.module, name, value)
+
+    # def __hasattr__(self, name):
+    #     return hasattr(self.module, name
+
 
 class QuantLinear(nn.Linear, QuantizedModule):
     def __init__(self, in_features, out_features, bias=True, device=None, dtype=None, quant_scheme=None):
