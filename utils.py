@@ -45,7 +45,8 @@ class quant_linear(Function):
     def backward(ctx, grad_output):
         quant_scheme = ctx.quant_scheme
         grad_output_shape = grad_output.shape
-        grad_output = grad_output.view(-1, grad_output_shape[-1])
+        # print(grad_output_shape)
+        grad_output = grad_output.reshape(-1, grad_output_shape[-1])
         qinput, qweight, bias = ctx.saved_tensors
 
         if not quant_scheme.same_input:
@@ -61,6 +62,47 @@ class quant_linear(Function):
         grad_bias = qgrad_output.sum(0) if bias is not None else None
         return grad_input.view(*grad_output_shape[:-1], -1), grad_weight, grad_bias, None
 
+
+class quant_conv1d(Function):
+    @staticmethod
+    def forward(ctx, input, weight, bias, stride, padding, dilation, groups, quant_scheme):
+        ctx.quant_scheme = quant_scheme
+        ctx.stride = stride
+        ctx.padding = padding
+        ctx.dilation = dilation
+        ctx.groups = groups
+        qinput = quant_scheme.input_quant(input)
+        qweight = quant_scheme.weight_quant(weight)
+
+        if quant_scheme.same_input:
+            input = qinput
+        if quant_scheme.same_weight:
+            weight = qweight
+        ctx.save_for_backward(qinput, qweight, bias)
+
+        output = torch.nn.functional.conv1d(qinput, qweight, bias, stride, padding, dilation, groups)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        quant_scheme = ctx.quant_scheme
+        qinput, qweight, bias = ctx.saved_tensors
+
+        if not quant_scheme.same_input:
+            qinput = quant_scheme.back_input_quant(qinput)
+        if not quant_scheme.same_weight:
+            qweight = quant_scheme.back_weight_quant(qweight)
+
+        qgrad_output = quant_scheme.grad_quant(grad_output)
+        
+        grad_input = torch.nn.grad.conv1d_input(
+            qinput.shape, qweight, qgrad_output, 
+            ctx.stride, ctx.padding, ctx.dilation, ctx.groups)
+        grad_weight = torch.nn.grad.conv1d_weight(
+            qinput, qweight.shape, qgrad_output, 
+            ctx.stride, ctx.padding, ctx.dilation, ctx.groups)
+        grad_bias = qgrad_output.sum(dim=(0, 2)) if bias is not None else None
+        return grad_input, grad_weight, grad_bias, None, None, None, None, None
 
 class quant_conv2d(Function):
     @staticmethod
@@ -218,14 +260,33 @@ class QuantLinear(nn.Linear, QuantizedModule):
         self.quant_scheme = quant_scheme
 
     def forward(self, input):
-        if self.training:
-            return quant_linear.apply(input, self.weight, self.bias, self.quant_scheme)
-        else:
-            return torch.nn.functional.linear(input, self.weight, self.bias)
+        return quant_linear.apply(input, self.weight, self.bias, self.quant_scheme)
 
     @classmethod
     def from_full_precision(self, module, quant_scheme):
         l = QuantLinear(module.in_features, module.out_features, module.bias is not None, module.weight.device, module.weight.dtype, quant_scheme)
+        l.weight.data.copy_(module.weight.data)
+        if module.bias is not None:
+            l.bias.data.copy_(module.bias.data)
+        return l
+
+class QuantConv1d(nn.Conv1d, QuantizedModule):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
+                 padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', 
+                 device=None, dtype=None, quant_scheme=None):
+        super(QuantConv1d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype)
+        self.quant_scheme = quant_scheme
+
+    def forward(self, input):
+        return quant_conv1d.apply(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups,
+                                  self.quant_scheme)
+    
+    @classmethod
+    def from_full_precision(self, module, quant_scheme):
+        l = QuantConv1d(module.in_channels, module.out_channels, module.kernel_size, 
+                        module.stride, module.padding, module.dilation, 
+                        module.groups, module.bias is not None, module.padding_mode,
+                        module.weight.device, module.weight.dtype, quant_scheme=quant_scheme)
         l.weight.data.copy_(module.weight.data)
         if module.bias is not None:
             l.bias.data.copy_(module.bias.data)
@@ -239,11 +300,8 @@ class QuantConv2d(nn.Conv2d, QuantizedModule):
         self.quant_scheme = quant_scheme
 
     def forward(self, input):
-        if self.training:
-            return quant_conv2d.apply(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups,
-                                      self.quant_scheme)
-        else:
-            return torch.nn.functional.conv2d(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+        return quant_conv2d.apply(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups,
+                                    self.quant_scheme)
 
     @classmethod
     def from_full_precision(self, module, quant_scheme):
@@ -257,13 +315,13 @@ class QuantConv2d(nn.Conv2d, QuantizedModule):
         return l
 
 
-# def apply_quant_scheme(network, quant_scheme):
-#     for name, module in network.named_children():
-#         if hasattr(module, "quant_scheme"):
-#             module.quant_scheme = quant_scheme
-#         else:
-#             apply_quant_scheme(module, quant_scheme)
-#     return network
+def apply_quant_scheme(network, quant_scheme):
+    for name, module in network.named_children():
+        if hasattr(module, "quant_scheme"):
+            module.quant_scheme = quant_scheme
+        else:
+            apply_quant_scheme(module, quant_scheme)
+    return network
 
 def replace_with_quantized(network, quant_scheme):
     to_replace = []
@@ -273,6 +331,9 @@ def replace_with_quantized(network, quant_scheme):
             to_replace.append((name, new_module))
         elif isinstance(module, nn.Conv2d):
             new_module = QuantConv2d.from_full_precision(module, quant_scheme)
+            to_replace.append((name, new_module))
+        elif isinstance(module, nn.Conv1d):
+            new_module = QuantConv1d.from_full_precision(module, quant_scheme)
             to_replace.append((name, new_module))
         else:
             replace_with_quantized(module, quant_scheme)
