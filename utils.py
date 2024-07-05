@@ -238,23 +238,23 @@ class QuantWrapper(nn.Module):
         self.apply_quant_scheme(quant_scheme)
         return self
     
-    def __getattr__(self, name):
-        try:
-            return object.__getattribute__(self.module, name)
-        except AttributeError:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+    # def __getattr__(self, name):
+    #     try:
+    #         return object.__getattribute__(self.module, name)
+    #     except AttributeError:
+    #         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-    def __setattr__(self, name, value):
-        if name == "module":
-            self.__dict__["module"] = value
-        else:
-            setattr(self.module, name, value)
+    # def __setattr__(self, name, value):
+    #     if name == "module":
+    #         self.__dict__["module"] = value
+    #     else:
+    #         setattr(self.module, name, value)
 
     # def __hasattr__(self, name):
     #     return hasattr(self.module, name
 
 
-class QuantLinear(nn.Linear, QuantizedModule):
+class QuantLinear(nn.Linear):
     def __init__(self, in_features, out_features, bias=True, device=None, dtype=None, quant_scheme=None):
         super(QuantLinear, self).__init__(in_features, out_features, bias, device, dtype)
         self.quant_scheme = quant_scheme
@@ -270,7 +270,7 @@ class QuantLinear(nn.Linear, QuantizedModule):
             l.bias.data.copy_(module.bias.data)
         return l
 
-class QuantConv1d(nn.Conv1d, QuantizedModule):
+class QuantConv1d(nn.Conv1d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
                  padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', 
                  device=None, dtype=None, quant_scheme=None):
@@ -292,7 +292,7 @@ class QuantConv1d(nn.Conv1d, QuantizedModule):
             l.bias.data.copy_(module.bias.data)
         return l
 
-class QuantConv2d(nn.Conv2d, QuantizedModule):
+class QuantConv2d(nn.Conv2d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
                  padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', 
                  device=None, dtype=None, quant_scheme=None):
