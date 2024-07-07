@@ -27,6 +27,7 @@ class quant_linear(Function):
         input_shape = input.shape
         # input = input.view(input_shape[0], -1)
         input = input.view(-1, input_shape[-1])
+        input_type = input.dtype
         qinput = quant_scheme.input_quant(input)
         qweight = quant_scheme.weight_quant(weight)
 
@@ -36,7 +37,7 @@ class quant_linear(Function):
             weight = qweight
         ctx.save_for_backward(qinput, qweight, bias)
 
-        output = qinput.mm(qweight.t())
+        output = qinput.mm(qweight.t()).to(input_type)
         if bias is not None:
             output += bias
         return output.view(*input_shape[:-1], -1)
@@ -47,6 +48,7 @@ class quant_linear(Function):
         grad_output_shape = grad_output.shape
         # print(grad_output_shape)
         grad_output = grad_output.reshape(-1, grad_output_shape[-1])
+        grad_output_type = grad_output.dtype
         qinput, qweight, bias = ctx.saved_tensors
 
         if not quant_scheme.same_input:
@@ -56,8 +58,8 @@ class quant_linear(Function):
 
         qgrad_output = quant_scheme.grad_quant(grad_output)
 
-        grad_input = qgrad_output.mm(qweight)
-        grad_weight = qgrad_output.t().mm(qinput)
+        grad_input = qgrad_output.mm(qweight).to(grad_output_type)
+        grad_weight = qgrad_output.t().mm(qinput).to(grad_output_type)
 
         grad_bias = qgrad_output.sum(0) if bias is not None else None
         return grad_input.view(*grad_output_shape[:-1], -1), grad_weight, grad_bias, None
