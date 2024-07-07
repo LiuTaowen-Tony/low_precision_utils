@@ -190,19 +190,19 @@ class QuantScheme:
             raise ValueError("Invalid number format")
 
     def input_quant(self, x):
-        return self.quant(x, self.fnumber, self.fround_mode)
+        return self.quant(x.to(torch.float32), self.fnumber, self.fround_mode).to(torch.bfloat16)
     
     def weight_quant(self, x):
-        return self.quant(x, self.wnumber, self.wround_mode)
+        return self.quant(x.to(torch.float32), self.wnumber, self.wround_mode).to(torch.bfloat16)
 
     def grad_quant(self, x):
-        return self.quant(x, self.bnumber, self.bround_mode)
+        return self.quant(x.to(torch.float32), self.bnumber, self.bround_mode).to(torch.bfloat16)
 
     def back_input_quant(self, x):
-        return self.quant(x, self.bfnumber, self.bfround_mode)
+        return self.quant(x.to(torch.float32), self.bfnumber, self.bfround_mode).to(torch.bfloat16)
     
     def back_weight_quant(self, x):
-        return self.quant(x, self.bwnumber, self.bwround_mode)
+        return self.quant(x.to(torch.float32), self.bwnumber, self.bwround_mode).to(torch.bfloat16)
 
     def __str__(self):
         return self.__dict__.__str__()
