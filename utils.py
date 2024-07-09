@@ -20,6 +20,8 @@ def assert_nan(x):
 import torch
 from torch.autograd import Function
 
+FP32 =  qtorch.FloatingPoint(8, 23)
+
 class quant_linear(Function):
     @staticmethod
     def forward(ctx, input, weight, bias=None, quant_scheme=None):
@@ -30,6 +32,8 @@ class quant_linear(Function):
         input_type = input.dtype
         qinput = quant_scheme.input_quant(input)
         qweight = quant_scheme.weight_quant(weight)
+        if bias is not None:
+            bias = bias.to(torch.bfloat16)
 
         if quant_scheme.same_input:
             input = qinput
@@ -56,12 +60,13 @@ class quant_linear(Function):
         if not quant_scheme.same_weight:
             qweight = quant_scheme.back_weight_quant(qweight)
 
-        qgrad_output = quant_scheme.grad_quant(grad_output)
+        qgrad_output1 = quant_scheme.grad_quant(grad_output)
+        qgrad_output2 = quant_scheme.grad_quant2(grad_output)
 
-        grad_input = qgrad_output.mm(qweight).to(grad_output_type)
-        grad_weight = qgrad_output.t().mm(qinput).to(grad_output_type)
+        grad_input = qgrad_output1.mm(qweight).to(grad_output_type)
+        grad_weight = qgrad_output2.t().mm(qinput).to(grad_output_type)
 
-        grad_bias = qgrad_output.sum(0) if bias is not None else None
+        grad_bias = grad_output.sum(0) if bias is not None else None
         return grad_input.view(*grad_output_shape[:-1], -1), grad_weight, grad_bias, None
 
 
@@ -96,14 +101,15 @@ class quant_conv1d(Function):
             qweight = quant_scheme.back_weight_quant(qweight)
 
         qgrad_output = quant_scheme.grad_quant(grad_output)
+        qgrad_output2 = quant_scheme.grad_quant2(grad_output)
         
         grad_input = torch.nn.grad.conv1d_input(
             qinput.shape, qweight, qgrad_output, 
             ctx.stride, ctx.padding, ctx.dilation, ctx.groups)
         grad_weight = torch.nn.grad.conv1d_weight(
-            qinput, qweight.shape, qgrad_output, 
+            qinput, qweight.shape, qgrad_output2, 
             ctx.stride, ctx.padding, ctx.dilation, ctx.groups)
-        grad_bias = qgrad_output.sum(dim=(0, 2)) if bias is not None else None
+        grad_bias = grad_output.sum(dim=(0, 2)) if bias is not None else None
         return grad_input, grad_weight, grad_bias, None, None, None, None, None
 
 class quant_conv2d(Function):
@@ -116,6 +122,8 @@ class quant_conv2d(Function):
         ctx.groups = groups
         qinput = quant_scheme.input_quant(input)
         qweight = quant_scheme.weight_quant(weight)
+        if bias is not None:
+            bias = bias.to(torch.bfloat16)
 
         if quant_scheme.same_input:
             input = qinput
@@ -165,7 +173,9 @@ class QuantScheme:
                  bfnumber=None,
                  bwnumber=None,
                  bfround_mode=None,
-                 bwround_mode=None,):
+                 bwround_mode=None,
+                 bnumber2=None,
+                 bround_mode2=None,):
         self.fnumber = fnumber
         self.bnumber = bnumber
         self.wnumber = wnumber
@@ -178,6 +188,8 @@ class QuantScheme:
         self.bwround_mode = bwround_mode or wround_mode
         self.same_input = same_input
         self.same_weight = same_weight
+        self.bnumber2 = bnumber2 or bnumber
+        self.bround_mode2 = bround_mode2 or bround_mode
 
     def quant(self, x, number, round_mode):
         if isinstance(number, qtorch.FloatingPoint):
@@ -206,14 +218,33 @@ class QuantScheme:
     def back_weight_quant(self, x):
         return self.quant(x.to(torch.float32), self.bwnumber, self.bwround_mode).to(torch.bfloat16)
 
+    def grad_quant2(self, x):
+        return self.quant(x.to(torch.float32), self.bnumber2, self.bround_mode2).to(torch.bfloat16)
+
     def __str__(self):
         return self.__dict__.__str__()
+
+FP32_SCHEME = QuantScheme(
+    fnumber=FP32,
+    bnumber=FP32,
+    wnumber=FP32,
+    fround_mode="nearest",
+    bround_mode="nearest",
+    wround_mode="nearest",
+    bfnumber=FP32,
+    bwnumber=FP32,
+    bfround_mode="nearest",
+    bwround_mode="nearest",
+    same_input=True,
+    same_weight=True
+)
 
 
 class QuantWrapper(nn.Module):
     def __init__(self, module, quant_scheme):
         super(QuantWrapper, self).__init__()
         module = replace_with_quantized(module, quant_scheme)
+        self.quant_scheme = quant_scheme
         self.module = module
 
     def apply_quant_scheme(self, quant_scheme):

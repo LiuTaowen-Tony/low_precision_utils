@@ -3,6 +3,8 @@ import numpy as np
 from torch import nn
 from typing import Dict
 import torch
+from . import utils
+import pandas as pd
 
 class EMAMetrics:
     def __init__(self, beta=0.8) -> None:
@@ -35,6 +37,12 @@ class Logger:
                 self.metrics[key].append(value)
         self.n_iter += 1
 
+    def to_df(self) -> pd.DataFrame:
+        return pd.DataFrame(self.metrics)
+
+    def to_csv(self, path: str) -> None:
+        self.to_df().to_csv(path)
+
     def report(self) -> Dict[str, float]:
         report = {}
         for key, values in self.metrics.items():
@@ -56,35 +64,116 @@ class Logger:
     def __len__(self):
         return len(self.metrics)
 
+def power_iteration_find_hessian_eigen(loss, params, n_iter=30, tol=1e-4):
+    """estimates the largest singular value based on power iteration"""
+    # get number of params
+    params = list(params)
+    num_param = sum(p.numel() for p in params)
+    # Calculate the gradient of the loss with respect to the model parameters
+    #print(params)
+    grad_params = torch.autograd.grad(loss, list(params), create_graph=True)
+    #print("grad_params unfalttened:",grad_params)
+    grad_params = torch.cat([e.flatten() for e in grad_params]) # flatten
+    #print("grad_params:",grad_params)
+    # Compute the vector product of the Hessian and a random vector using the power iteration method
+    v = torch.rand(num_param).to(grad_params.device)
+    v = v/torch.norm(v)
+    #print(v)      
+    Hv = torch.autograd.grad(grad_params, list(params), v, retain_graph=True)
+    #print("Hv:",Hv)
+    Hv = torch.cat([e.flatten() for e in Hv]) # flatten
+    #print("Hv:",Hv)       
+    # normalize Hv
+    Hv = Hv /torch.norm(Hv)
+    for i in range(n_iter):
+        # Compute the vector product of the (inverse Hessian or) Hessian and Hv 
+        w = torch.autograd.grad(grad_params, list(params), Hv, retain_graph=True)
+        w = torch.cat([e.flatten() for e in w]) # flatten
+        # Calculate the Rayleigh quotient to estimate the largest eigenvalue of the Hessian (inverse Hessian)
+        eigenvalue = torch.dot(Hv, w)/ torch.dot(Hv, Hv) 
+        # Check if the difference between consecutive estimates is below the tolerance level
+        if i > 0 and torch.abs(eigenvalue - last_eigenvalue) < tol:
+            break
+        last_eigenvalue = eigenvalue
+        # Update Hv for the next iteration
+        Hv = w/torch.norm(w)        
+    return eigenvalue.detach().item()
+
+# def _compute_grad_vector(loss, params):
+#     grad = torch.autograd.grad(loss, params, create_graph=False)
+#     grad_vector = torch.cat([g.flatten() for g in grad])
+#     return grad_vector
+
+# def _hessian_vector_product(loss, params, vector):
+#     grad = _compute_grad_vector(loss, params)
+#     grad_vector_product = torch.autograd.grad(grad, params, vector, retain_graph=True)
+#     grad_vector_product = torch.cat([g.flatten() for g in grad_vector_product])
+#     return grad_vector_product
+
+# def power_iteration_find_hessian_eigen(loss, params, v=None, n_iter=100, tol=1e-2):
+#     # Ensure all params require gradients
+#     params = list(params)
+#     for p in params:
+#         if not p.requires_grad:
+#             raise ValueError("All parameters must have requires_grad=True")
+
+#     # Ensure loss requires gradient
+#     if not loss.requires_grad:
+#         raise ValueError("Loss must have requires_grad=True")
+
+#     # Check the gradient function of the loss
+#     if loss.grad_fn is None:
+#         raise ValueError("Loss must be part of a computation graph and have a grad_fn")
+
+#     if v is None:
+#         v = torch.randn_like(torch.cat([p.flatten() for p in params]))
+#     v = v / torch.norm(v)
+#     for _ in range(n_iter):
+#         Hv = _hessian_vector_product(loss, params, v)
+#         Hv_norm = torch.norm(Hv)
+#         v = Hv / Hv_norm
+#     return v, Hv_norm.item()
+
+def grad_bias_std_norm(model: utils.QuantWrapper, quant_scheme, data, target, iters=30):
+    model.apply_quant_scheme(utils.FP32_SCHEME)
+    loss = model.module.loss_acc(data, target)["loss"]
+    full_grads = torch.autograd.grad(loss, model.parameters())
+    full_grad_vector = torch.cat([g.flatten() for g in full_grads]).detach()
+
+    model.apply_quant_scheme(quant_scheme)
+    grads_acc = torch.zeros_like(full_grad_vector)
+    # grads_square_acc = torch.zeros_like(full_grad_vector)
+    distance_acc = 0
+
+    for _ in range(iters):
+        loss = model.module.loss_acc(data, target)["loss"]
+        grad = torch.autograd.grad(loss, model.parameters())
+        grad_vector = torch.cat([g.flatten() for g in grad]).detach()
+        grads_acc += grad_vector
+        # grads_square_acc += grad_vector ** 2
+        distance = torch.norm(grad_vector - full_grad_vector).item()
+        distance_acc += distance
+    grad_mean = grads_acc / iters
+    # grad_square = grads_square_acc / iters
+    distance_mean = distance_acc / iters
+
+    # grad_var = grad_square - grad_mean ** 2
+    # torch.norm(torch.sqrt(grad_var)).item(),
+    grad_bias = full_grad_vector - grad_mean
+    return torch.norm(grad_bias).item(), distance_mean
+
+def grad_bias_deterministic(model, scheme, data, target):
+    model.apply_quant_scheme(scheme)
+    loss = model.module.loss_acc(data, target)["loss"]
+    grads = torch.autograd.grad(loss, model.parameters())
+    grad_vec = torch.cat([g.flatten() for g in grads])
+    model.apply_quant_scheme(utils.FP32_SCHEME)
+    loss = model.module.loss_acc(data, target)["loss"]
+    grads = torch.autograd.grad(loss, model.parameters())
+    full_grad_vec = torch.cat([g.flatten() for g in grads])
+    return torch.norm(grad_vec - full_grad_vec).item()
 
 
-def diff_of_grad(wrapper, model_weight, master_weight, data, target):
-    # at the same traning step
-    # that is have the same training data and target
-    # we compute the gradient on full precison model
-    # then compute the same thing on low precision model (with different seed)
-    # we check if for each parameter the estimation is biased
-
-    # this time, we check the difference between activation quantise only
-    # and full precision model
-
-    master_weight.zero_grad()
-    reference_loss = master_weight.loss_acc(data, target)["loss"]
-    reference_loss.backward()
-    reference_grad = get_grad(master_weight)
-    master_weight.zero_grad()
-
-    grad_estimation_samples = []
-    for i in range(100):
-        model_weight.zero_grad()
-        sample_loss = model_weight.loss_acc(data, target)["loss"]
-        sample_loss.backward()
-        sample_grad = get_grad(model_weight)
-        grad_estimation_samples.append(sample_grad)
-        model_weight.zero_grad()
-
-    return reference_grad, sample_grad
-    
 
 
 
