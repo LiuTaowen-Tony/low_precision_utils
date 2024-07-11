@@ -134,7 +134,9 @@ def power_iteration_find_hessian_eigen(loss, params, n_iter=30, tol=1e-4):
 #         v = Hv / Hv_norm
 #     return v, Hv_norm.item()
 
-def grad_bias_std_norm(model: utils.QuantWrapper, quant_scheme, data, target, iters=30):
+def grad_error_metrics(model: utils.QuantWrapper, quant_scheme, data, target, iters=100):
+    # returns : < mini-batch-grad , E[error] > , E[||error||^2]
+
     model.apply_quant_scheme(utils.FP32_SCHEME)
     loss = model.module.loss_acc(data, target)["loss"]
     full_grads = torch.autograd.grad(loss, model.parameters())
@@ -142,27 +144,21 @@ def grad_bias_std_norm(model: utils.QuantWrapper, quant_scheme, data, target, it
 
     model.apply_quant_scheme(quant_scheme)
     grads_acc = torch.zeros_like(full_grad_vector)
-    # grads_square_acc = torch.zeros_like(full_grad_vector)
-    distance_acc = 0
+    error_norm_acc = 0
 
     for _ in range(iters):
         loss = model.module.loss_acc(data, target)["loss"]
         grad = torch.autograd.grad(loss, model.parameters())
         grad_vector = torch.cat([g.flatten() for g in grad]).detach()
+        error_norm_acc += (grad_vector - full_grad_vector).norm().item()
         grads_acc += grad_vector
-        # grads_square_acc += grad_vector ** 2
-        distance = torch.norm(grad_vector - full_grad_vector).item()
-        distance_acc += distance
     grad_mean = grads_acc / iters
-    # grad_square = grads_square_acc / iters
-    distance_mean = distance_acc / iters
+    exp_error_norm = error_norm_acc / iters
+    grad_bias = grad_mean - full_grad_vector
+    return torch.dot(full_grad_vector, grad_bias).item(), exp_error_norm
 
-    # grad_var = grad_square - grad_mean ** 2
-    # torch.norm(torch.sqrt(grad_var)).item(),
-    grad_bias = full_grad_vector - grad_mean
-    return torch.norm(grad_bias).item(), distance_mean
-
-def grad_bias_deterministic(model, scheme, data, target):
+def grad_bias_deterministic_deterministic(model, scheme, data, target):
+    # returns : < mini-batch-grad , E[error] > , E[||error||^2]
     model.apply_quant_scheme(scheme)
     loss = model.module.loss_acc(data, target)["loss"]
     grads = torch.autograd.grad(loss, model.parameters())
@@ -171,7 +167,7 @@ def grad_bias_deterministic(model, scheme, data, target):
     loss = model.module.loss_acc(data, target)["loss"]
     grads = torch.autograd.grad(loss, model.parameters())
     full_grad_vec = torch.cat([g.flatten() for g in grads])
-    return torch.norm(grad_vec - full_grad_vec).item()
+    return torch.dot(full_grad_vec, grad_vec - full_grad_vec).item(), torch.norm(grad_vec - full_grad_vec).item()
 
 
 

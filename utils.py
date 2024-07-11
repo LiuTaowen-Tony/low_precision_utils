@@ -191,6 +191,13 @@ class QuantScheme:
         self.bnumber2 = bnumber2 or bnumber
         self.bround_mode2 = bround_mode2 or bround_mode
 
+    @classmethod
+    def build(cls, **kw):
+        for k, v in kw.items():
+            if "number" in k:
+                kw[k] = qtorch.FloatingPoint(8, v)
+        return cls(**kw)
+
     def quant(self, x, number, round_mode):
         if isinstance(number, qtorch.FloatingPoint):
             if number.exp == 8 and number.man == 23:
