@@ -31,6 +31,8 @@ class Logger:
 
     def log(self, metrics: Dict[str, float]) -> None:
         for key, value in metrics.items():
+            if isinstance(value, torch.Tensor):
+                value = value.item()
             if key not in self.metrics:
                 self.metrics[key] = [value]
             else:
@@ -74,16 +76,11 @@ def power_iteration_find_hessian_eigen(loss, params, n_iter=30, tol=1e-4):
     grad_params = torch.autograd.grad(loss, list(params), create_graph=True)
     #print("grad_params unfalttened:",grad_params)
     grad_params = torch.cat([e.flatten() for e in grad_params]) # flatten
-    #print("grad_params:",grad_params)
     # Compute the vector product of the Hessian and a random vector using the power iteration method
     v = torch.rand(num_param).to(grad_params.device)
     v = v/torch.norm(v)
-    #print(v)      
     Hv = torch.autograd.grad(grad_params, list(params), v, retain_graph=True)
-    #print("Hv:",Hv)
     Hv = torch.cat([e.flatten() for e in Hv]) # flatten
-    #print("Hv:",Hv)       
-    # normalize Hv
     Hv = Hv /torch.norm(Hv)
     for i in range(n_iter):
         # Compute the vector product of the (inverse Hessian or) Hessian and Hv 
@@ -99,43 +96,8 @@ def power_iteration_find_hessian_eigen(loss, params, n_iter=30, tol=1e-4):
         Hv = w/torch.norm(w)        
     return eigenvalue.detach().item()
 
-# def _compute_grad_vector(loss, params):
-#     grad = torch.autograd.grad(loss, params, create_graph=False)
-#     grad_vector = torch.cat([g.flatten() for g in grad])
-#     return grad_vector
-
-# def _hessian_vector_product(loss, params, vector):
-#     grad = _compute_grad_vector(loss, params)
-#     grad_vector_product = torch.autograd.grad(grad, params, vector, retain_graph=True)
-#     grad_vector_product = torch.cat([g.flatten() for g in grad_vector_product])
-#     return grad_vector_product
-
-# def power_iteration_find_hessian_eigen(loss, params, v=None, n_iter=100, tol=1e-2):
-#     # Ensure all params require gradients
-#     params = list(params)
-#     for p in params:
-#         if not p.requires_grad:
-#             raise ValueError("All parameters must have requires_grad=True")
-
-#     # Ensure loss requires gradient
-#     if not loss.requires_grad:
-#         raise ValueError("Loss must have requires_grad=True")
-
-#     # Check the gradient function of the loss
-#     if loss.grad_fn is None:
-#         raise ValueError("Loss must be part of a computation graph and have a grad_fn")
-
-#     if v is None:
-#         v = torch.randn_like(torch.cat([p.flatten() for p in params]))
-#     v = v / torch.norm(v)
-#     for _ in range(n_iter):
-#         Hv = _hessian_vector_product(loss, params, v)
-#         Hv_norm = torch.norm(Hv)
-#         v = Hv / Hv_norm
-#     return v, Hv_norm.item()
-
-def grad_error_metrics(model: utils.QuantWrapper, quant_scheme, data, target, iters=100):
-    # returns : < mini-batch-grad , E[error] > , E[||error||^2]
+def grad_error_metrics(model: utils.QuantWrapper, quant_scheme, data, target, iters=30):
+    # returns : < mini-batch-grad , E[low-precision-grad] > , E[||error||^2]
 
     model.apply_quant_scheme(utils.FP32_SCHEME)
     loss = model.module.loss_acc(data, target)["loss"]
@@ -155,7 +117,8 @@ def grad_error_metrics(model: utils.QuantWrapper, quant_scheme, data, target, it
     grad_mean = grads_acc / iters
     exp_error_norm = error_norm_acc / iters
     grad_bias = grad_mean - full_grad_vector
-    return torch.dot(full_grad_vector, grad_bias).item(), exp_error_norm
+    cos_sim = torch.dot(grad_mean, full_grad_vector) / (torch.norm(grad_mean) * torch.norm(full_grad_vector))
+    return cos_sim, exp_error_norm, torch.norm(grad_bias)
 
 def grad_bias_deterministic_deterministic(model, scheme, data, target):
     # returns : < mini-batch-grad , E[error] > , E[||error||^2]
@@ -194,16 +157,10 @@ def grad_on_dataset(network, data, target):
     network.train()
     total_norm = 0
     network.zero_grad()
-    idx = torch.randperm(len(data))
-    data = data[idx]
-    target = target[idx]
     loss_acc = network.loss_acc(data, target)
     loss = loss_acc["loss"]
-    acc = loss_acc["acc"]
     loss.backward()
     total_norm = nn.utils.clip_grad_norm_(network.parameters(), float('inf'))
-    grad_zero = grad_zero_percentage(network)
-    # grad_weight_corr = compute_grad_weight_corr(network)
     network.zero_grad()
     return {"grad_norm_entire": total_norm.item()} #| grad_zero #| grad_weight_corr
 

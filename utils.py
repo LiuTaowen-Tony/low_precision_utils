@@ -262,6 +262,9 @@ class QuantWrapper(nn.Module):
 
     def forward(self, *args, **kw):
         return self.module(*args, **kw)
+
+    def loss_acc(self, X, y):
+        return self.module.loss_acc(X, y)
     
     def fix_quant(self, weight_number):
         full_precision_number = qtorch.FloatingPoint(8, 23)
