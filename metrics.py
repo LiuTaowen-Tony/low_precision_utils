@@ -23,48 +23,6 @@ class EMAMetrics:
         report = {f"{key}_ema": value for key, value in self.metrics.items()}
         return report
 
-class Logger:
-    def __init__(self, log_interval=10):
-        self.log_interval = log_interval
-        self.metrics = {}
-        self.n_iter = 0
-
-    def log(self, metrics: Dict[str, float]) -> None:
-        for key, value in metrics.items():
-            if isinstance(value, torch.Tensor):
-                value = value.item()
-            if key not in self.metrics:
-                self.metrics[key] = [value]
-            else:
-                self.metrics[key].append(value)
-        self.n_iter += 1
-
-    def to_df(self) -> pd.DataFrame:
-        return pd.DataFrame(self.metrics)
-
-    def to_csv(self, path: str) -> None:
-        self.to_df().to_csv(path)
-
-    def report(self) -> Dict[str, float]:
-        report = {}
-        for key, values in self.metrics.items():
-            report[key] = np.mean(values)
-        return report
-
-    def should_log(self) -> bool:
-        return self.n_iter % self.log_interval == 0
-
-    def reset(self) -> None:
-        self.metrics = {}
-        self.n_iter = 0
-    def __getitem__(self, key):
-        return self.metrics[key]
-    def __setitem__(self, key, value):
-        self.metrics[key] = value
-    def __contains__(self, key):
-        return key in self.metrics
-    def __len__(self):
-        return len(self.metrics)
 
 def power_iteration_find_hessian_eigen(loss, params, n_iter=30, tol=1e-4):
     """estimates the largest singular value based on power iteration"""
