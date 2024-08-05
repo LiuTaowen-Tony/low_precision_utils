@@ -1,12 +1,15 @@
+import json
 import torch
 from torch import nn
 import torch.autograd
 import torch.nn.grad
 
+import argparse
 import qtorch
 import qtorch.quant
 import copy
 
+SCALING=True
 TEST_NAN = False
 
 def assert_nan(x):
@@ -20,18 +23,16 @@ def assert_nan(x):
 import torch
 from torch.autograd import Function
 
-FP32 =  qtorch.FloatingPoint(8, 23)
-
 class quant_linear(Function):
     @staticmethod
-    def forward(ctx, input, weight, bias=None, quant_scheme=None):
+    def forward(ctx, input, weight, bias=None, quant_scheme:"QuantScheme" = None):
         ctx.quant_scheme = quant_scheme
         input_shape = input.shape
         # input = input.view(input_shape[0], -1)
         input = input.view(-1, input_shape[-1])
         input_type = input.dtype
-        qinput = quant_scheme.input_quant(input)
-        qweight = quant_scheme.weight_quant(weight)
+        qinput = quant_scheme.act.quant(input)
+        qweight = quant_scheme.weight.quant(weight)
         if bias is not None:
             bias = bias.to(torch.bfloat16)
 
@@ -48,7 +49,7 @@ class quant_linear(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        quant_scheme = ctx.quant_scheme
+        quant_scheme : QuantScheme = ctx.quant_scheme
         grad_output_shape = grad_output.shape
         # print(grad_output_shape)
         grad_output = grad_output.reshape(-1, grad_output_shape[-1])
@@ -56,12 +57,12 @@ class quant_linear(Function):
         qinput, qweight, bias = ctx.saved_tensors
 
         if not quant_scheme.same_input:
-            qinput = quant_scheme.back_input_quant(qinput)
+            qinput = quant_scheme.bact.quant(qinput)
         if not quant_scheme.same_weight:
-            qweight = quant_scheme.back_weight_quant(qweight)
+            qweight = quant_scheme.bweight.quant(qweight)
 
-        qgrad_output1 = quant_scheme.grad_quant(grad_output)
-        qgrad_output2 = quant_scheme.grad_quant2(grad_output)
+        qgrad_output1 = quant_scheme.goact.quant(grad_output)
+        qgrad_output2 = quant_scheme.goweight.quant(grad_output)
 
         grad_input = qgrad_output1.mm(qweight).to(grad_output_type)
         grad_weight = qgrad_output2.t().mm(qinput).to(grad_output_type)
@@ -69,17 +70,16 @@ class quant_linear(Function):
         grad_bias = grad_output.sum(0) if bias is not None else None
         return grad_input.view(*grad_output_shape[:-1], -1), grad_weight, grad_bias, None
 
-
 class quant_conv1d(Function):
     @staticmethod
-    def forward(ctx, input, weight, bias, stride, padding, dilation, groups, quant_scheme):
+    def forward(ctx, input, weight, bias, stride, padding, dilation, groups, quant_scheme:"QuantScheme"):
         ctx.quant_scheme = quant_scheme
         ctx.stride = stride
         ctx.padding = padding
         ctx.dilation = dilation
         ctx.groups = groups
-        qinput = quant_scheme.input_quant(input)
-        qweight = quant_scheme.weight_quant(weight)
+        qinput = quant_scheme.act.quant(input)
+        qweight = quant_scheme.weight.quant(weight)
 
         if quant_scheme.same_input:
             input = qinput
@@ -92,16 +92,16 @@ class quant_conv1d(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        quant_scheme = ctx.quant_scheme
+        quant_scheme : QuantScheme = ctx.quant_scheme
         qinput, qweight, bias = ctx.saved_tensors
 
         if not quant_scheme.same_input:
-            qinput = quant_scheme.back_input_quant(qinput)
+            qinput = quant_scheme.bact.quant(qinput)
         if not quant_scheme.same_weight:
-            qweight = quant_scheme.back_weight_quant(qweight)
+            qweight = quant_scheme.bweight.quant(qweight)
 
-        qgrad_output = quant_scheme.grad_quant(grad_output)
-        qgrad_output2 = quant_scheme.grad_quant2(grad_output)
+        qgrad_output = quant_scheme.goact.quant(grad_output)
+        qgrad_output2 = quant_scheme.goweight.quant(grad_output)
         
         grad_input = torch.nn.grad.conv1d_input(
             qinput.shape, qweight, qgrad_output, 
@@ -114,14 +114,14 @@ class quant_conv1d(Function):
 
 class quant_conv2d(Function):
     @staticmethod
-    def forward(ctx, input, weight, bias, stride, padding, dilation, groups, quant_scheme):
+    def forward(ctx, input, weight, bias, stride, padding, dilation, groups, quant_scheme:"QuantScheme"):
         ctx.quant_scheme = quant_scheme
         ctx.stride = stride
         ctx.padding = padding
         ctx.dilation = dilation
         ctx.groups = groups
-        qinput = quant_scheme.input_quant(input)
-        qweight = quant_scheme.weight_quant(weight)
+        qinput = quant_scheme.act.quant(input)
+        qweight = quant_scheme.weight.quant(weight)
         if bias is not None:
             bias = bias.to(torch.bfloat16)
 
@@ -136,15 +136,16 @@ class quant_conv2d(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        quant_scheme = ctx.quant_scheme
+        quant_scheme : QuantScheme = ctx.quant_scheme
         qinput, qweight, bias = ctx.saved_tensors
 
+        # print("grad_output", grad_output.var().item(), grad_output.mean().item())
         if not quant_scheme.same_input:
-            qinput = quant_scheme.back_input_quant(qinput)
+            qinput = quant_scheme.bact.quant(qinput)
         if not quant_scheme.same_weight:
-            qweight = quant_scheme.back_weight_quant(qweight)
+            qweight = quant_scheme.bweight.quant(qweight)
 
-        qgrad_output = quant_scheme.grad_quant(grad_output)
+        qgrad_output = quant_scheme.goact.quant(grad_output)
         
         grad_input = torch.nn.grad.conv2d_input(
             qinput.shape, qweight, qgrad_output, 
@@ -152,6 +153,7 @@ class quant_conv2d(Function):
         grad_weight = torch.nn.grad.conv2d_weight(
             qinput, qweight.shape, qgrad_output, 
             ctx.stride, ctx.padding, ctx.dilation, ctx.groups)
+        # print("grad_weight", grad_weight.var().item(), grad_weight.mean().item())
         grad_bias = qgrad_output.sum(dim=(0, 2, 3)) if bias is not None else None
         return grad_input, grad_weight, grad_bias, None, None, None, None, None
 
@@ -163,88 +165,112 @@ class QuantizedModule():
     def from_full_precision(self, module, quant_scheme):
         raise NotImplementedError
 
-class QuantScheme:
-    def __init__(self, fnumber, bnumber, wnumber, 
-                 fround_mode="stochastic", 
-                 bround_mode="stochastic", 
-                 wround_mode="stochastic", 
-                 same_input=False,
-                 same_weight=False,
-                 bfnumber=None,
-                 bwnumber=None,
-                 bfround_mode=None,
-                 bwround_mode=None,
-                 bnumber2=None,
-                 bround_mode2=None,):
-        self.fnumber = fnumber
-        self.bnumber = bnumber
-        self.wnumber = wnumber
-        self.bfnumber = bfnumber or fnumber
-        self.bwnumber = bwnumber or wnumber
-        self.fround_mode = fround_mode
-        self.bround_mode = bround_mode
-        self.wround_mode = wround_mode
-        self.bfround_mode = bfround_mode or fround_mode
-        self.bwround_mode = bwround_mode or wround_mode
-        self.same_input = same_input
-        self.same_weight = same_weight
-        self.bnumber2 = bnumber2 or bnumber
-        self.bround_mode2 = bround_mode2 or bround_mode
 
-    @classmethod
-    def build(cls, **kw):
-        for k, v in kw.items():
-            if "number" in k:
-                kw[k] = qtorch.FloatingPoint(8, v)
-        return cls(**kw)
+def add_argparse(parser : argparse.ArgumentParser):
+    parser.add_argument("--quant_scheme_json", type=str, default="{}")
+    return parser
 
-    def quant(self, x, number, round_mode):
-        if isinstance(number, qtorch.FloatingPoint):
-            if number.exp == 8 and number.man == 23:
+
+class QuantMethod:
+    def __init__(self, number_type, round_mode, number_impl):
+        self.number_type = number_type
+        self.round_mode = round_mode
+        self.number_impl = number_impl
+
+    def quant(self, x):
+        if isinstance(self.number_impl, qtorch.FloatingPoint):
+            if self.number_impl.exp == 8 and self.number_impl.man == 23:
                 return x
-            return qtorch.quant.float_quantize(x, number.exp, number.man, round_mode)
-        elif isinstance(number, qtorch.FixedPoint):
-            return qtorch.quant.fixed_point_quantize(x, number.wl, number.fl, number.clamp, number.symmetric, round_mode)
-        elif isinstance(number, qtorch.BlockFloatingPoint):
-            return qtorch.quant.block_quantize(x, number.wl, number.dim, round_mode)
+        # print("before", x.var(), x.abs().max())
+        if SCALING:
+            x_scale = x.abs().max()
+            x = x / x_scale
+        # print("after", x.var(), x.abs().max())
+        save_dtype = x.dtype
+        x = x.to(torch.float32)
+        if isinstance(self.number_impl, qtorch.FloatingPoint):
+            result =  qtorch.quant.float_quantize(x, self.number_impl.exp, self.number_impl.man, self.round_mode)
+        elif isinstance(self.number_impl, qtorch.FixedPoint):
+            result =  qtorch.quant.fixed_point_quantize(x, self.number_impl.wl, self.number_impl.fl, self.number_impl.clamp, self.number_impl.symmetric, self.round_mode)
+        elif isinstance(self.number_impl, qtorch.BlockFloatingPoint):
+            result = qtorch.quant.block_quantize(x, self.number_impl.wl, self.number_impl.dim, self.round_mode)
         else:
             raise ValueError("Invalid number format")
+        if SCALING:
+            result = result * x_scale
+        return result.to(save_dtype)
 
-    def input_quant(self, x):
-        return self.quant(x.to(torch.float32), self.fnumber, self.fround_mode).to(torch.bfloat16)
-    
-    def weight_quant(self, x):
-        return self.quant(x.to(torch.float32), self.wnumber, self.wround_mode).to(torch.bfloat16)
+    @classmethod
+    def from_json(cls, json_dict: dict):
+        number_type = json_dict.get("number_type", "fp")
+        round_mode = json_dict.get("round_mode", "stochastic")
+        if number_type == "fp":
+            exp = json_dict.get("exp", 8)
+            man = json_dict.get("man", 23)
+            number_impl = qtorch.FloatingPoint(exp, man)
+        elif number_type == "fixed":
+            wl = json_dict.get("wl", 8)
+            fl = json_dict.get("fl", 16)
+            clamp = json_dict.get("clamp", True)
+            symmetric = json_dict.get("symmetric", False)
+            number_impl = qtorch.FixedPoint(wl, fl, clamp, symmetric)
+        elif number_type == "block":
+            wl = json_dict.get("wl", 8)
+            dim = json_dict.get("dim", 8)
+            number_impl = qtorch.BlockFloatingPoint(wl, dim)
+        else:
+            raise ValueError("Invalid number format")
+        return cls(number_type, round_mode, number_impl)
 
-    def grad_quant(self, x):
-        return self.quant(x.to(torch.float32), self.bnumber, self.bround_mode).to(torch.bfloat16)
+class QuantScheme:
+    def __init__(self, 
+                act: QuantMethod,
+                weight: QuantMethod,
+                bact: QuantMethod,
+                bweight: QuantMethod,
+                goact: QuantMethod,
+                goweight: QuantMethod,
+                same_input: bool = False,
+                same_weight: bool = False):
+        self.act = act
+        self.goact = goact
+        self.weight = weight
+        self.bact = bact
+        self.bweight = bweight
+        self.goweight = goweight
+        self.same_input = same_input
+        self.same_weight = same_weight
 
-    def back_input_quant(self, x):
-        return self.quant(x.to(torch.float32), self.bfnumber, self.bfround_mode).to(torch.bfloat16)
-    
-    def back_weight_quant(self, x):
-        return self.quant(x.to(torch.float32), self.bwnumber, self.bwround_mode).to(torch.bfloat16)
+    @classmethod
+    def from_args(cls, args: argparse.Namespace):
+        quant_scheme_json = args.quant_scheme_json
+        quant_scheme_json = json.loads(quant_scheme_json)
+        return cls.from_json(quant_scheme_json)
 
-    def grad_quant2(self, x):
-        return self.quant(x.to(torch.float32), self.bnumber2, self.bround_mode2).to(torch.bfloat16)
+    @classmethod
+    def from_json(cls, json_dict: dict):
+        fp_default = {"number_type":"fp"}
+        return QuantScheme(
+            act=QuantMethod.from_json( json_dict.get("act", fp_default)),
+            weight=QuantMethod.from_json( json_dict.get("weight", fp_default)),
+            bact=QuantMethod.from_json( json_dict.get("bact", fp_default)),
+            bweight=QuantMethod.from_json( json_dict.get("bweight", fp_default)),
+            goact=QuantMethod.from_json( json_dict.get("goact", fp_default)),
+            goweight=QuantMethod.from_json( json_dict.get("goweight", fp_default)),
+            same_input=json_dict.get("same_input", False),
+            same_weight=json_dict.get("same_weight", False)
+        )
 
     def __str__(self):
         return self.__dict__.__str__()
 
+FP32 = QuantMethod("fp", "nearest", qtorch.FloatingPoint(8, 23))
 FP32_SCHEME = QuantScheme(
-    fnumber=FP32,
-    bnumber=FP32,
-    wnumber=FP32,
-    fround_mode="nearest",
-    bround_mode="nearest",
-    wround_mode="nearest",
-    bfnumber=FP32,
-    bwnumber=FP32,
-    bfround_mode="nearest",
-    bwround_mode="nearest",
+    FP32, FP32, FP32, FP32, FP32, FP32,
     same_input=True,
     same_weight=True
 )
+
 
 
 class QuantWrapper(nn.Module):
@@ -298,7 +324,7 @@ class QuantWrapper(nn.Module):
 
 
 class QuantLinear(nn.Linear):
-    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None, quant_scheme=None):
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None, quant_scheme:"QuantScheme" = None):
         super(QuantLinear, self).__init__(in_features, out_features, bias, device, dtype)
         self.quant_scheme = quant_scheme
 
@@ -316,7 +342,7 @@ class QuantLinear(nn.Linear):
 class QuantConv1d(nn.Conv1d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
                  padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', 
-                 device=None, dtype=None, quant_scheme=None):
+                 device=None, dtype=None, quant_scheme:"QuantScheme" = None):
         super(QuantConv1d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype)
         self.quant_scheme = quant_scheme
 
@@ -338,7 +364,7 @@ class QuantConv1d(nn.Conv1d):
 class QuantConv2d(nn.Conv2d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
                  padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', 
-                 device=None, dtype=None, quant_scheme=None):
+                 device=None, dtype=None, quant_scheme:"QuantScheme" = None):
         super(QuantConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype)
         self.quant_scheme = quant_scheme
 
@@ -393,7 +419,7 @@ def replace_with_quantized(network, quant_scheme):
 #             model_weight,
 #             optimizer,
 #             scheduler,
-#             weight_quant=None,
+#             weight.quant=None,
 #             grad_clip=float("inf"),
 #             grad_scaling=1.0,
 #             grad_stats=False,
@@ -405,9 +431,9 @@ def replace_with_quantized(network, quant_scheme):
 #         self.grad_scaling = grad_scaling
 #         self.grad_clip = grad_clip
 #         self.scheduler = scheduler
-#         if weight_quant is None:
-#             weight_quant = lambda x: x
-#         self.weight_quant = weight_quant
+#         if weight.quant is None:
+#             weight.quant = lambda x: x
+#         self.weight.quant = weight.quant
 #         self.grad_stats = grad_stats
 #         self.grad_acc_steps = grad_acc_steps
 
@@ -430,7 +456,7 @@ def replace_with_quantized(network, quant_scheme):
 #         for model, master in zip(self.model_weight.parameters(), self.master_weight.parameters()):
 #             assert_nan(master.data)
 #             if quantize:
-#                 model.data.copy_(self.weight_quant(master.data))
+#                 model.data.copy_(self.weight.quant(master.data))
 #             else:
 #                 model.data.copy_(master.data)
 
