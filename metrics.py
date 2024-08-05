@@ -109,9 +109,13 @@ def grad_error_metrics(model: utils.QuantWrapper, quant_scheme, data, target, it
     error_norm_acc = 0
 
     for _ in range(iters):
-        loss = model.module.loss_acc(data, target)["loss"]
-        grad = torch.autograd.grad(loss, model.parameters())
-        grad_vector = torch.cat([g.flatten() for g in grad]).detach()
+        grad_vector = torch.zeros_like(full_grad_vector)
+        for n, (X, y) in enumerate(getBatches(data, target, 512)):
+            loss = model.module.loss_acc(X, y)["loss"]
+            grad = torch.autograd.grad(loss, model.parameters())
+            grad_vector_local = torch.cat([g.flatten() for g in grad]).detach()
+            grad_vector += grad_vector_local
+        grad_vector /= n
         error_norm_acc += (grad_vector - full_grad_vector).norm().item()
         grads_acc += grad_vector
     grad_mean = grads_acc / iters
@@ -120,7 +124,7 @@ def grad_error_metrics(model: utils.QuantWrapper, quant_scheme, data, target, it
     cos_sim = torch.dot(grad_mean, full_grad_vector) / (torch.norm(grad_mean) * torch.norm(full_grad_vector))
     return cos_sim, exp_error_norm, torch.norm(grad_bias)
 
-def grad_bias_deterministic_deterministic(model, scheme, data, target):
+def grad_error_metrics_deterministic(model, scheme, data, target):
     # returns : < mini-batch-grad , E[error] > , E[||error||^2]
     model.apply_quant_scheme(scheme)
     loss = model.module.loss_acc(data, target)["loss"]
@@ -130,10 +134,16 @@ def grad_bias_deterministic_deterministic(model, scheme, data, target):
     loss = model.module.loss_acc(data, target)["loss"]
     grads = torch.autograd.grad(loss, model.parameters())
     full_grad_vec = torch.cat([g.flatten() for g in grads])
-    return torch.dot(full_grad_vec, grad_vec - full_grad_vec).item(), torch.norm(grad_vec - full_grad_vec).item()
+    bias = grad_vec - full_grad_vec
+    cos_sim = torch.dot(grad_vec, full_grad_vec) / (torch.norm(grad_vec) * torch.norm(full_grad_vec))
+    return cos_sim, bias.norm().item()
 
 
 
+def getBatches(X, y, batch_size):
+    n = X.size(0)
+    for i in range(0, n, batch_size):
+        yield X[i:i+batch_size], y[i:i+batch_size]
 
 
 def compute_grad_weight_corr(model):
