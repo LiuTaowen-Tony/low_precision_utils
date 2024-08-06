@@ -3,8 +3,7 @@ import numpy as np
 from torch import nn
 from typing import Dict
 import torch
-from . import utils
-import pandas as pd
+import utils
 
 class EMAMetrics:
     def __init__(self, beta=0.8) -> None:
@@ -90,10 +89,6 @@ def grad_bias_deterministic_deterministic(model, scheme, data, target):
     full_grad_vec = torch.cat([g.flatten() for g in grads])
     return torch.dot(full_grad_vec, grad_vec - full_grad_vec).item(), torch.norm(grad_vec - full_grad_vec).item()
 
-
-
-
-
 def compute_grad_weight_corr(model):
     result = {}
     for name, param in model.named_parameters():
@@ -106,9 +101,6 @@ def compute_grad_weight_corr(model):
             # corr = torch.corrcoef(param.grad.data.flatten(), param.data.flatten())[0, 1]
             result[f"{name}_grad_corr"] = corr[0, 1].item()
     return result
-    
-
-
     
 
 def grad_on_dataset(network, data, target):
