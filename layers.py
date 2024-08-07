@@ -1,9 +1,9 @@
 from torch import nn
 from . import functional
-from . import utils 
+from . import quant 
 
 class QuantLinear(nn.Linear):
-    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None, quant_scheme:"utils.QuantScheme" = None):
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None, quant_scheme:"quant.QuantScheme" = None):
         super(QuantLinear, self).__init__(in_features, out_features, bias, device, dtype)
         self.quant_scheme = quant_scheme
 
@@ -21,7 +21,7 @@ class QuantLinear(nn.Linear):
 class QuantConv1d(nn.Conv1d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
                  padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', 
-                 device=None, dtype=None, quant_scheme:"utils.QuantScheme" = None):
+                 device=None, dtype=None, quant_scheme:"quant.QuantScheme" = None):
         super(QuantConv1d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype)
         self.quant_scheme = quant_scheme
 
@@ -43,7 +43,7 @@ class QuantConv1d(nn.Conv1d):
 class QuantConv2d(nn.Conv2d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
                  padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', 
-                 device=None, dtype=None, quant_scheme:"utils.QuantScheme" = None):
+                 device=None, dtype=None, quant_scheme:"quant.QuantScheme" = None):
         super(QuantConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype)
         self.quant_scheme = quant_scheme
 

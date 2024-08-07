@@ -3,7 +3,7 @@ import numpy as np
 from torch import nn
 from typing import Dict
 import torch
-import utils
+from . import quant
 
 class EMAMetrics:
     def __init__(self, beta=0.8) -> None:
@@ -53,10 +53,10 @@ def power_iteration_find_hessian_eigen(loss, params, n_iter=30, tol=1e-4):
         Hv = w/torch.norm(w)        
     return eigenvalue.detach().item()
 
-def grad_error_metrics(model: utils.QuantWrapper, quant_scheme, data, target, iters=30):
+def grad_error_metrics(model: quant.QuantWrapper, quant_scheme, data, target, iters=30):
     # returns : < mini-batch-grad , E[low-precision-grad] > , E[||error||^2]
 
-    model.apply_quant_scheme(utils.FP32_SCHEME)
+    model.apply_quant_scheme(quant.FP32_SCHEME)
     loss = model.module.loss_acc(data, target)["loss"]
     full_grads = torch.autograd.grad(loss, model.parameters())
     full_grad_vector = torch.cat([g.flatten() for g in full_grads]).detach()
@@ -79,7 +79,7 @@ def grad_error_metrics(model: utils.QuantWrapper, quant_scheme, data, target, it
     exp_error_norm = error_norm_acc / iters
     grad_bias = grad_mean - full_grad_vector
     cos_sim = torch.dot(grad_mean, full_grad_vector) / (torch.norm(grad_mean) * torch.norm(full_grad_vector))
-    return cos_sim, exp_error_norm, torch.norm(grad_bias)
+    return cos_sim.item(), exp_error_norm, torch.norm(grad_bias).item()
 
 def grad_error_metrics_deterministic(model, scheme, data, target):
     # returns : < mini-batch-grad , E[error] > , E[||error||^2]
@@ -87,7 +87,7 @@ def grad_error_metrics_deterministic(model, scheme, data, target):
     loss = model.module.loss_acc(data, target)["loss"]
     grads = torch.autograd.grad(loss, model.parameters())
     grad_vec = torch.cat([g.flatten() for g in grads])
-    model.apply_quant_scheme(utils.FP32_SCHEME)
+    model.apply_quant_scheme(quant.FP32_SCHEME)
     loss = model.module.loss_acc(data, target)["loss"]
     grads = torch.autograd.grad(loss, model.parameters())
     full_grad_vec = torch.cat([g.flatten() for g in grads])

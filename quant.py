@@ -36,29 +36,29 @@ class QuantMethod:
         pass
 
     @classmethod
-    def from_dict(cls, json_dict: dict):
+    def _from_dict(cls, json_dict: dict):
         return cls(**json_dict)
 
     @classmethod
-    def from_json(cls, json_dict: dict):
+    def from_dict(cls, json_dict: dict):
         number_type = json_dict.get("number_type", "fp")
         json_dict["number_type"] = number_type
         json_dict = json_dict.copy()
         del json_dict["number_type"]
 
         if number_type == "fp":
-            return FPQuant.from_dict(json_dict)
+            return FPQuant._from_dict(json_dict)
         elif number_type == "int":
-            return IntQuant.from_dict(json_dict)
+            return IntQuant._from_dict(json_dict)
         elif number_type == "block":
-            return BlockQuant.from_dict(json_dict)
+            return BlockQuant._from_dict(json_dict)
         elif number_type == "scaled_int":
-            return ScaledIntQuant.from_dict(json_dict)
+            return ScaledIntQuant._from_dict(json_dict)
         else:
             raise ValueError(f"number_type {number_type} not recognized")
 
 # quant method strategy
-@dataclass
+@dataclass(frozen=True)
 class FPQuant(QuantMethod):
     exp : int = 8
     man : int = 23
@@ -69,10 +69,10 @@ class FPQuant(QuantMethod):
             return x
         return qtorch.quant.float_quantize(x, self.exp, self.man, self.round_mode)
 
-@dataclass
+@dataclass(frozen=True)
 class IntQuant(QuantMethod):
-    wl : int = 8
-    fl : int = 16
+    wl : int = 16
+    fl : int = 8
     clamp : bool = True
     symmetric : bool = False
     round_mode : str = "stochastic"
@@ -80,7 +80,7 @@ class IntQuant(QuantMethod):
     def quant(self, x):
         return qtorch.quant.fixed_point_quantize(x, self.wl, self.fl, self.clamp, self.symmetric, self.round_mode)
 
-@dataclass
+@dataclass(frozen=True)
 class BlockQuant(QuantMethod):
     wl : int = 8
     dim : int = 8
@@ -89,9 +89,9 @@ class BlockQuant(QuantMethod):
     def quant(self, x):
         return qtorch.quant.block_quantize(x, self.wl, self.dim, self.round_mode)
 
-@dataclass
+@dataclass(frozen=True)
 class ScaledIntQuant(QuantMethod):
-    wl : int = 8
+    fl : int = 8
     clamp : bool = True
     symmetric : bool = False
     round_mode : str = "stochastic"
@@ -99,39 +99,31 @@ class ScaledIntQuant(QuantMethod):
     def quant(self, x):
         x_scale = x.abs().max()
         x = x / x_scale
-        result =  qtorch.quant.fixed_point_quantize(x, self.wl, self.wl - 1, self.clamp, self.symmetric, self.round_mode)
+        result =  qtorch.quant.fixed_point_quantize(x, self.fl + 1, self.fl, self.clamp, self.symmetric, self.round_mode)
         return result * x_scale
 
+@dataclass(frozen=True)
 class QuantScheme:
-    def __init__(self, 
-                act: QuantMethod,
-                weight: QuantMethod,
-                bact: QuantMethod,
-                bweight: QuantMethod,
-                goact: QuantMethod,
-                goweight: QuantMethod,
-                same_input: bool = False,
-                same_weight: bool = False):
-        self.act = act
-        self.goact = goact
-        self.weight = weight
-        self.bact = bact
-        self.bweight = bweight
-        self.goweight = goweight
-        self.same_input = same_input
-        self.same_weight = same_weight
+    act: QuantMethod = FPQuant()
+    weight: QuantMethod = FPQuant()
+    bact: QuantMethod = FPQuant()
+    bweight: QuantMethod = FPQuant()
+    goact: QuantMethod = FPQuant()
+    goweight: QuantMethod = FPQuant()
+    same_input: bool = False
+    same_weight: bool = False
 
     @classmethod
     def from_args(cls, args: argparse.Namespace):
         json_dict = args.quant_scheme
         fp_default = {"number_type":"fp"}
         return QuantScheme(
-            act=QuantMethod.from_json( json_dict.get("act", fp_default)),
-            weight=QuantMethod.from_json( json_dict.get("weight", fp_default)),
-            bact=QuantMethod.from_json( json_dict.get("bact", fp_default)),
-            bweight=QuantMethod.from_json( json_dict.get("bweight", fp_default)),
-            goact=QuantMethod.from_json( json_dict.get("goact", fp_default)),
-            goweight=QuantMethod.from_json( json_dict.get("goweight", fp_default)),
+            act=QuantMethod.from_dict( json_dict.get("act", fp_default)),
+            weight=QuantMethod.from_dict( json_dict.get("weight", fp_default)),
+            bact=QuantMethod.from_dict( json_dict.get("bact", fp_default)),
+            bweight=QuantMethod.from_dict( json_dict.get("bweight", fp_default)),
+            goact=QuantMethod.from_dict( json_dict.get("goact", fp_default)),
+            goweight=QuantMethod.from_dict( json_dict.get("goweight", fp_default)),
             same_input=json_dict.get("same_input", False),
             same_weight=json_dict.get("same_weight", False)
         )
@@ -140,11 +132,7 @@ class QuantScheme:
         return self.__dict__.__str__()
 
 FP32 = FPQuant()
-FP32_SCHEME = QuantScheme(
-    FP32, FP32, FP32, FP32, FP32, FP32,
-    same_input=True,
-    same_weight=True
-)
+FP32_SCHEME = QuantScheme(FP32, FP32, FP32, FP32, FP32, FP32, same_input=True, same_weight=True)
 
 class QuantWrapper(nn.Module):
     def __init__(self, module, quant_scheme):
@@ -165,9 +153,10 @@ class QuantWrapper(nn.Module):
 def apply_quant_scheme(network, quant_scheme, filter=None):
     for name, module in network.named_modules():
         if hasattr(module, "quant_scheme"):
-            if filter:
-                if filter(name, module):
-                    module.quant_scheme = quant_scheme
+            if filter is None:
+                module.quant_scheme = quant_scheme
+            elif filter(name, module):
+                module.quant_scheme = quant_scheme
     return network
 
 def replace_with_quantized(network, quant_scheme):

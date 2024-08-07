@@ -1,10 +1,10 @@
 import torch
 from torch.autograd import Function
-from . import utils
+from . import quant
 
 class quant_linear(Function):
     @staticmethod
-    def forward(ctx, input, weight, bias=None, quant_scheme:"utils.QuantScheme" = None):
+    def forward(ctx, input, weight, bias=None, quant_scheme:"quant.QuantScheme" = None):
         ctx.quant_scheme = quant_scheme
         input_shape = input.shape
         # input = input.view(input_shape[0], -1)
@@ -28,7 +28,7 @@ class quant_linear(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        quant_scheme : "utils.QuantScheme" = ctx.quant_scheme
+        quant_scheme : "quant.QuantScheme" = ctx.quant_scheme
         grad_output_shape = grad_output.shape
         # print(grad_output_shape)
         grad_output = grad_output.reshape(-1, grad_output_shape[-1])
@@ -51,7 +51,7 @@ class quant_linear(Function):
 
 class quant_conv1d(Function):
     @staticmethod
-    def forward(ctx, input, weight, bias, stride, padding, dilation, groups, quant_scheme:"utils.QuantScheme"):
+    def forward(ctx, input, weight, bias, stride, padding, dilation, groups, quant_scheme:"quant.QuantScheme"):
         ctx.quant_scheme = quant_scheme
         ctx.stride = stride
         ctx.padding = padding
@@ -71,7 +71,7 @@ class quant_conv1d(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        quant_scheme : "utils.QuantScheme" = ctx.quant_scheme
+        quant_scheme : "quant.QuantScheme" = ctx.quant_scheme
         qinput, qweight, bias = ctx.saved_tensors
 
         if not quant_scheme.same_input:
@@ -93,7 +93,7 @@ class quant_conv1d(Function):
 
 class quant_conv2d(Function):
     @staticmethod
-    def forward(ctx, input, weight, bias, stride, padding, dilation, groups, quant_scheme:"utils.QuantScheme"):
+    def forward(ctx, input, weight, bias, stride, padding, dilation, groups, quant_scheme:"quant.QuantScheme"):
         ctx.quant_scheme = quant_scheme
         ctx.stride = stride
         ctx.padding = padding
@@ -115,7 +115,7 @@ class quant_conv2d(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        quant_scheme : "utils.QuantScheme" = ctx.quant_scheme
+        quant_scheme : "quant.QuantScheme" = ctx.quant_scheme
         qinput, qweight, bias = ctx.saved_tensors
 
         # print("grad_output", grad_output.var().item(), grad_output.mean().item())
