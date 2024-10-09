@@ -35,6 +35,13 @@ class QuantMethod:
     def quant(self, x):
         pass
 
+    def quant(self, x):
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        x = self._quant(x)
+        x = x.to(input_dtype)
+        return x
+
     @classmethod
     def _from_dict(cls, json_dict: dict):
         return cls(**json_dict)
@@ -64,7 +71,7 @@ class FPQuant(QuantMethod):
     man : int = 23
     round_mode : str = "stochastic"
 
-    def quant(self, x):
+    def _quant(self, x):
         if self.exp == 8 and self.man == 23:
             return x
         return qtorch.quant.float_quantize(x, self.exp, self.man, self.round_mode)
@@ -77,7 +84,7 @@ class IntQuant(QuantMethod):
     symmetric : bool = False
     round_mode : str = "stochastic"
 
-    def quant(self, x):
+    def _quant(self, x):
         return qtorch.quant.fixed_point_quantize(x, self.wl, self.fl, self.clamp, self.symmetric, self.round_mode)
 
 @dataclass(frozen=True)
@@ -86,7 +93,7 @@ class BlockQuant(QuantMethod):
     dim : int = 8
     round_mode : str = "stochastic"
 
-    def quant(self, x):
+    def _quant(self, x):
         return qtorch.quant.block_quantize(x, self.wl, self.dim, self.round_mode)
 
 @dataclass(frozen=True)
@@ -96,11 +103,12 @@ class ScaledIntQuant(QuantMethod):
     symmetric : bool = False
     round_mode : str = "stochastic"
 
-    def quant(self, x):
+    def _quant(self, x):
         x_scale = x.abs().max()
         x = x / x_scale
         result =  qtorch.quant.fixed_point_quantize(x, self.fl + 1, self.fl, self.clamp, self.symmetric, self.round_mode)
-        return result * x_scale
+        result = result * x_scale
+        return result
 
 @dataclass(frozen=True)
 class QuantScheme:
@@ -128,14 +136,11 @@ class QuantScheme:
             same_weight=json_dict.get("same_weight", False)
         )
 
-    def __str__(self):
-        return self.__dict__.__str__()
-
 FP32 = FPQuant()
 FP32_SCHEME = QuantScheme(FP32, FP32, FP32, FP32, FP32, FP32, same_input=True, same_weight=True)
 
 class QuantWrapper(nn.Module):
-    def __init__(self, module, quant_scheme):
+    def __init__(self, module, quant_scheme = FP32_SCHEME):
         super(QuantWrapper, self).__init__()
         module = replace_with_quantized(module, quant_scheme)
         self.quant_scheme = quant_scheme

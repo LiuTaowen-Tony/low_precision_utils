@@ -67,12 +67,14 @@ def grad_error_metrics(model: quant.QuantWrapper, quant_scheme, data, target, it
 
     for _ in range(iters):
         grad_vector = torch.zeros_like(full_grad_vector)
-        for n, (X, y) in enumerate(getBatches(data, target, 512)):
+        i = 0
+        for X, y in (getBatches(data, target, 512)):
+            i += 1
             loss = model.module.loss_acc(X, y)["loss"]
             grad = torch.autograd.grad(loss, model.parameters())
             grad_vector_local = torch.cat([g.flatten() for g in grad]).detach()
             grad_vector += grad_vector_local
-        grad_vector /= n
+        grad_vector /= i
         error_norm_acc += (grad_vector - full_grad_vector).norm().item()
         grads_acc += grad_vector
     grad_mean = grads_acc / iters
@@ -80,6 +82,67 @@ def grad_error_metrics(model: quant.QuantWrapper, quant_scheme, data, target, it
     grad_bias = grad_mean - full_grad_vector
     cos_sim = torch.dot(grad_mean, full_grad_vector) / (torch.norm(grad_mean) * torch.norm(full_grad_vector))
     return cos_sim.item(), exp_error_norm, torch.norm(grad_bias).item()
+
+def collect_grads(model, data, target):
+    grads = {}
+    model.zero_grad()
+    loss = model.module.loss_acc(data, target)["loss"]
+    loss.backward()
+    for name, param in model.named_parameters():
+        if param.grad is not None and param.numel() > 1000 and "bias" not in name:
+            grads[name] = param.grad.detach().clone()
+    return grads
+
+def cos_sim_fn(x, y) -> float:
+    return torch.dot(x.flatten(), y.flatten()) / (torch.norm(x) * torch.norm(y)).item()
+
+def per_layer_grad_error_metrics(model: quant.QuantMethod, quant_scheme, data, target, iters=30):
+    model.apply_quant_scheme(quant.FP32_SCHEME)
+    full_grads = collect_grads(model, data, target)
+
+    model.apply_quant_scheme(quant_scheme)
+    grads_acc = {k : torch.zeros_like(v) for k, v in full_grads.items()}
+    error_norm_acc = {k : 0 for k in full_grads.keys()}
+
+    for _ in range(iters):
+        grads = collect_grads(model, data, target)
+        for k, v in grads.items():
+            grads_acc[k] += v
+        for k in grads_acc.keys():
+            error_norm_acc[k] += (grads[k] - full_grads[k]).norm().item()
+
+    grad_mean = {k : v / iters for k, v in grads_acc.items()} 
+    del grads_acc
+
+    norm_exp_error = {f"&metric=norm_exp_error&layer={k}" : (grad_mean[k] - full_grads[k]).norm().item() for k in full_grads.keys()}
+    exp_error_norm = {f"&metric=error_norm&layer={k}" : v / iters for k, v in error_norm_acc.items()}
+    grad_bias = {f"&metric=mse&layer={k}" : torch.mean((grad_mean[k] - full_grads[k]) ** 2).item() for k in full_grads.keys()}
+    # cos_sim = {f"&metric=sim&layer={k}" : cos_sim_fn(grad_mean[k], full_grads[k]) for k in full_grads.keys()}
+    result = {}
+    result.update(grad_bias)
+    result.update(exp_error_norm)
+    result.update(norm_exp_error)
+    # result.update(cos_sim)
+    return result
+
+def per_layer_grad_error_metrics_deterministic(model: quant.QuantMethod, quant_scheme, data, target):
+    model.apply_quant_scheme(quant.FP32_SCHEME)
+    full_grads = collect_grads(model, data, target)
+
+    model.apply_quant_scheme(quant_scheme)
+
+    grads = collect_grads(model, data, target)
+
+    exp_error_norm = {f"&metric=mse&layer={k}" : torch.mean((grads[k] - full_grads[k]) ** 2).item() for k in full_grads.keys()}
+    grad_bias = {f"&metric=error_norm&layer={k}" : (grads[k] - full_grads[k]).norm().item() for k in full_grads.keys()}
+    # cos_sim = {f"&metric=sim&layer={k}" : cos_sim_fn(grads[k], full_grads[k]) for k in full_grads.keys()}
+    result = {}
+    result.update(exp_error_norm)
+    result.update(grad_bias)
+    # result.update(cos_sim)
+    return result
+
+
 
 def grad_error_metrics_deterministic(model, scheme, data, target):
     # returns : < mini-batch-grad , E[error] > , E[||error||^2]

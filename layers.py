@@ -18,6 +18,13 @@ class QuantLinear(nn.Linear):
             l.bias.data.copy_(module.bias.data)
         return l
 
+
+    def __repr__(self):
+        return super().__repr__() + " " + self.quant_scheme.__str__()
+
+    def __str__(self):
+        return super().__repr__() + " " + self.quant_scheme.__str__()
+
 class QuantConv1d(nn.Conv1d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
                  padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', 
@@ -40,6 +47,12 @@ class QuantConv1d(nn.Conv1d):
             l.bias.data.copy_(module.bias.data)
         return l
 
+    def __repr__(self):
+        return super().__repr__() + " " + self.quant_scheme.__str__()
+
+    def __str__(self):
+        return super().__repr__() + " " + self.quant_scheme.__str__()
+
 class QuantConv2d(nn.Conv2d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
                  padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', 
@@ -50,6 +63,12 @@ class QuantConv2d(nn.Conv2d):
     def forward(self, input):
         return functional.quant_conv2d.apply(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups,
                                     self.quant_scheme)
+
+    def __repr__(self):
+        return super().__repr__() + " " + self.quant_scheme.__str__()
+
+    def __str__(self):
+        return super().__repr__() + " " + self.quant_scheme.__str__()
 
     @classmethod
     def from_full_precision(self, module, quant_scheme):
