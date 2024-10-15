@@ -121,7 +121,9 @@ class quant_conv2d(Function):
             weight = qweight
         ctx.save_for_backward(qinput, qweight, bias)
 
-        output = torch.nn.functional.conv2d(qinput, qweight, bias, stride, padding, dilation, groups)
+        qinput = qinput.to(torch.bfloat16)
+        qweight = qweight.to(torch.bfloat16)
+        output = torch.nn.functional.conv2d(qinput, qweight, bias, stride, padding, dilation, groups).to(torch.float32)
         return output
 
     @staticmethod
@@ -136,12 +138,15 @@ class quant_conv2d(Function):
 
         qgrad_output = quant_scheme.grad_quant(grad_output)
         
+        qgrad_output = qgrad_output.to(torch.bfloat16)
+        qinput = qinput.to(torch.bfloat16)
+        qweight = qweight.to(torch.bfloat16)
         grad_input = torch.nn.grad.conv2d_input(
             qinput.shape, qweight, qgrad_output, 
-            ctx.stride, ctx.padding, ctx.dilation, ctx.groups)
+            ctx.stride, ctx.padding, ctx.dilation, ctx.groups).to(torch.float32)
         grad_weight = torch.nn.grad.conv2d_weight(
             qinput, qweight.shape, qgrad_output, 
-            ctx.stride, ctx.padding, ctx.dilation, ctx.groups)
+            ctx.stride, ctx.padding, ctx.dilation, ctx.groups).to(torch.float32)
         grad_bias = qgrad_output.sum(dim=(0, 2, 3)) if bias is not None else None
         return grad_input, grad_weight, grad_bias, None, None, None, None, None
 
