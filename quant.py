@@ -61,6 +61,8 @@ class QuantMethod:
             return BlockQuant._from_dict(json_dict)
         elif number_type == "scaled_int":
             return ScaledIntQuant._from_dict(json_dict)
+        elif number_type == "npoints":
+            return NPoints._from_dict(json_dict)
         else:
             raise ValueError(f"number_type {number_type} not recognized")
 
@@ -95,6 +97,21 @@ class BlockQuant(QuantMethod):
 
     def _quant(self, x):
         return qtorch.quant.block_quantize(x, self.wl, self.dim, self.round_mode)
+
+@dataclass(frozen=True)
+class NPoints(QuantMethod):
+    points : int = 8
+    clamp : bool = True
+    symmetric : bool = False
+    round_mode : str = "stochastic"
+
+    def _quant(self, x):
+        x_min = x.min()
+        x_scale = x.max() - x_min
+        x = (x - x_min) / x_scale * self.points
+        result =  qtorch.quant.fixed_point_quantize(x, 16, 0, self.clamp, self.symmetric, self.round_mode)
+        result = result * x_scale / self.points + x_min
+        return result
 
 @dataclass(frozen=True)
 class ScaledIntQuant(QuantMethod):
