@@ -62,9 +62,22 @@ class QuantMethod:
         elif number_type == "scaled_int":
             return ScaledIntQuant._from_dict(json_dict)
         elif number_type == "npoints":
-            return NPoints._from_dict(json_dict)
+            return NPointsQuant._from_dict(json_dict)
+        elif number_type == "noise":
+            return NoiseQuant._from_dict(json_dict)
         else:
             raise ValueError(f"number_type {number_type} not recognized")
+
+
+# quant method strategy
+@dataclass(frozen=True)
+class NoiseQuant(QuantMethod):
+    std : int = 0.01
+
+    def _quant(self, x):
+        if self.std == 0:
+            return x
+        return x + torch.randn_like(x) * self.std
 
 # quant method strategy
 @dataclass(frozen=True)
@@ -99,7 +112,7 @@ class BlockQuant(QuantMethod):
         return qtorch.quant.block_quantize(x, self.wl, self.dim, self.round_mode)
 
 @dataclass(frozen=True)
-class NPoints(QuantMethod):
+class NPointsQuant(QuantMethod):
     points : int = 8
     clamp : bool = True
     symmetric : bool = False
