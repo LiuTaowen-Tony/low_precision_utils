@@ -10,4 +10,4 @@ def show_representable_numbers(format: quant.QuantMethod, range: float = 1):
 
 
 if __name__ == "__main__":
-    show_representable_numbers(quant.FPQuant(exp=3, man=2), 10)
+    show_representable_numbers(quant.IntQuant(exp=3, man=2), 20)
