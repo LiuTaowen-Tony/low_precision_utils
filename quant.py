@@ -149,6 +149,21 @@ class ScaledIntQuant(QuantMethod):
         return result
 
 @dataclass(frozen=True)
+class PerSampleScaledIntQuant(QuantMethod):
+    fl : int = 8
+    clamp : bool = True
+    symmetric : bool = False
+    round_mode : str = "stochastic"
+
+    def _quant(self, x: torch.Tensor):
+        x_scale = x.abs().amax(dim=tuple(range(1, x.ndim)), keepdim=True)
+        x_scale = x_scale.where(x_scale != 0, torch.ones_like(x_scale))
+        x = x / x_scale
+        result =  qtorch.quant.fixed_point_quantize(x, self.fl + 1, self.fl, self.clamp, self.symmetric, self.round_mode)
+        result = result * x_scale
+        return result
+
+@dataclass(frozen=True)
 class QuantScheme:
     act: QuantMethod = FPQuant()
     weight: QuantMethod = FPQuant()
