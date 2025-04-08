@@ -101,7 +101,7 @@ class FPQuant(QuantMethod):
 
 @dataclass(frozen=True)
 class IntQuant(QuantMethod):
-    wl : int = 23
+    wl : int = 24
     fl : int = 8
     clamp : bool = True
     symmetric : bool = False
